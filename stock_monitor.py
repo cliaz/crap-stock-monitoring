@@ -274,7 +274,7 @@ class StockChartMonitor:
         # For normal mode, return a tuple of (crossing type, rightmost color)
         return result, rightmost_color
     
-    def log_transition(self, message, crossing_type, send_email=True):
+    def log_transition(self, message, crossing_type, send_email=True, silent=False):
         """
         Log a transition event to a file with timestamp and send email notification
         
@@ -282,6 +282,7 @@ class StockChartMonitor:
             message (str): The message to log
             crossing_type (str): The type of crossing detected (e.g., 'red_to_black', 'black_to_red')
             send_email (bool): Whether to send an email notification (default: True)
+            silent (bool): Whether to suppress logging message to console (default: False)
         """
         log_file = "nysi_changes.txt"
         timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
@@ -296,7 +297,8 @@ class StockChartMonitor:
         with open(log_file, 'a') as f:
             f.write(log_entry + '\n')
         
-        print(f"📝 Logged event to {log_file}")
+        if not silent:
+            print(f"📝 Logged event to {log_file}")
         
         # Send email notification if requested
         if send_email:
@@ -442,8 +444,8 @@ class StockChartMonitor:
                                 print(message)
                                 # Log the crossing and send email notification
                                 self.log_transition(f"Line crossing detected: {current_crossing}", current_crossing)
-                                # Add the current line color as a new line in the logs
-                                self.log_transition(f"Current line color: {rightmost_color}", f"{current_crossing}_color", send_email=False)
+                                # Add the current line color as a new line in the logs (silently)
+                                self.log_transition(f"Current line color: {rightmost_color}", f"{current_crossing}_color", send_email=False, silent=True)
                             else:
                                 # Just report the current state without logging or emailing
                                 if current_crossing != "no_crossing":
