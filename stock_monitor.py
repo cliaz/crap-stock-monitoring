@@ -136,8 +136,11 @@ class StockChartMonitor:
         red_lower2 = np.array([165, 30, 30])
         red_upper2 = np.array([180, 255, 255])
         
+        # Relaxed thresholds for black to detect faint black pixels
         black_lower = np.array([0, 0, 0])
-        black_upper = np.array([180, 100, 80])
+        #black_upper = np.array([180, 100, 80])     # Initial saturation and value thresholds. Were too strict, 
+                                                    # didn't detect faint black lines. Kept for posterity.
+        black_upper = np.array([180, 150, 100])     # Increased saturation and value thresholds
         
         # Create masks
         red_mask1 = cv2.inRange(hsv, red_lower1, red_upper1)
