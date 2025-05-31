@@ -1,3 +1,5 @@
+#!/usr/bin/env python3
+
 import requests
 import cv2
 import numpy as np
@@ -19,6 +21,9 @@ class StockChartMonitor:
         self.session.headers.update({
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
         })
+        self.last_saved_image = None  # Store the last saved image for comparison
+        # Check if today's image already exists and load it
+        self.load_todays_image()
     
     def get_current_chart_url(self):
         """Generate the current chart URL using StockCharts' direct API"""
@@ -76,7 +81,7 @@ class StockChartMonitor:
         except Exception as e:
             print(f"❌ Error saving image {filename}: {e}")
     
-    def extract_middle_section(self, image, start_x=None, end_x=None):
+    def extract_middle_section(self, image, start_x=None, end_x=None, start_y=None, end_y=None):
         """Extract the middle section of the chart where the line is located"""
         if image is None:
             return None
@@ -84,8 +89,11 @@ class StockChartMonitor:
         height, width = image.shape[:2]
         
         # Define middle section with specific pixel measurements
-        start_y = 125
-        end_y = 403
+        # Use provided vertical bounds if specified, otherwise use defaults
+        if start_y is None:
+            start_y = 125
+        if end_y is None:
+            end_y = 403
         
         # Use provided horizontal bounds if specified, otherwise use defaults
         if start_x is None or end_x is None:
@@ -98,7 +106,8 @@ class StockChartMonitor:
             end_x = max(start_x + 1, min(end_x, width))
         
         # Ensure we don't go out of bounds
-        end_y = min(end_y, height)
+        start_y = max(0, min(start_y, height - 1))
+        end_y = max(start_y + 1, min(end_y, height))
         
         middle_section = image[start_y:end_y, start_x:end_x]
         return middle_section
@@ -405,38 +414,55 @@ class StockChartMonitor:
                         full_image_opencv_rgb = np.array(full_image.convert('RGB'))
                         full_image_opencv = cv2.cvtColor(full_image_opencv_rgb, cv2.COLOR_RGB2BGR)
                         
-                        # Extract middle section
-                        middle_section = self.extract_middle_section(full_image_opencv)
-                        
-                        # Detect line crossing
-                        crossing_result = self.detect_line_crossing(middle_section, debug=False)
-                        # Since debug is False, crossing_result is a tuple (crossing_type, rightmost_color)
-                        current_crossing, rightmost_color = crossing_result
-                        
-                        # Get the last logged crossing from the log file
-                        last_crossing = self.get_last_logged_crossing()
-                        
-                        # Check if we should log this transition based on log file history
-                        if current_crossing != "no_crossing" and self.should_log_transition(current_crossing):
-                            message = f"⚠️ Line crossing detected: {current_crossing}"
-                            print(message)
-                            # Log the crossing and send email notification
-                            self.log_transition(f"Line crossing detected: {current_crossing}", current_crossing)
-                        else:
-                            # Just report the current state without logging or emailing
-                            if current_crossing != "no_crossing":
-                                print(f"📊 Line crossing remains: {current_crossing}")
-                                
-                                # If the current crossing matches the last logged crossing, add a "no change" entry
-                                if current_crossing == last_crossing:
-                                    # Log the rightmost column color, but don't send an email notification
-                                    self.log_transition(f"Current line color: {rightmost_color}", f"{current_crossing}_unchanged", send_email=False)
+                        # Check if the image is different from the previously saved one
+                        if self.images_are_different(full_image_opencv, self.last_saved_image):
+                            print("💾 New chart image detected - saving...")
+                            self.save_chart_image(full_image)
+                            # Update the last saved image
+                            self.last_saved_image = full_image_opencv
+                            
+                            # Only analyze the image if it's new
+                            # Extract middle section
+                            middle_section = self.extract_middle_section(full_image_opencv)
+                            
+                            # Detect line crossing
+                            crossing_result = self.detect_line_crossing(middle_section, debug=False)
+                            # Since debug is False, crossing_result is a tuple (crossing_type, rightmost_color)
+                            current_crossing, rightmost_color = crossing_result
+                            
+                            # Get the last logged crossing from the log file
+                            last_crossing = self.get_last_logged_crossing()
+                            
+                            # Check if we should log this transition based on log file history
+                            if current_crossing != "no_crossing" and self.should_log_transition(current_crossing):
+                                message = f"⚠️ Line crossing detected: {current_crossing}"
+                                print(message)
+                                # Log the crossing and send email notification
+                                self.log_transition(f"Line crossing detected: {current_crossing}", current_crossing)
+                                # Add the current line color as a new line in the logs
+                                self.log_transition(f"Current line color: {rightmost_color}", f"{current_crossing}_color", send_email=False)
                             else:
-                                print(f"📊 No line crossing detected, current color: {rightmost_color}")
-                                # Log the rightmost column color without sending an email
-                                self.log_transition(f"Current line color: {rightmost_color}", "no_crossing", send_email=False)
+                                # Just report the current state without logging or emailing
+                                if current_crossing != "no_crossing":
+                                    print(f"📊 Line crossing remains: {current_crossing}")
+                                    
+                                    # If the current crossing matches the last logged crossing, add a "no change" entry
+                                    if current_crossing == last_crossing:
+                                        # Log the rightmost column color, but don't send an email notification
+                                        self.log_transition(f"Current line color: {rightmost_color}", f"{current_crossing}_unchanged", send_email=False)
+                                else:
+                                    print(f"📊 No line crossing detected, current color: {rightmost_color}")
+                                    # Log the rightmost column color without sending an email
+                                    self.log_transition(f"Current line color: {rightmost_color}", "no_crossing", send_email=False)
+                        else:
+                            print("📊 Chart image unchanged since last check")
+                            # Log that the image is unchanged
+                            self.log_transition("Chart image unchanged since last check", "unchanged_image", send_email=False)
+                            # Skip further analysis since the image is unchanged
                     else:
                         print("❌ Failed to download image")
+                        # Log the failed download
+                        self.log_transition("No new image available - download failed", "image_download_failed", send_email=False)
                 elif monitoring_window:
                     # Only print window messages if window checking is enabled
                     # Calculate minutes until next monitoring window
@@ -468,9 +494,16 @@ class StockChartMonitor:
         except Exception as e:
             print(f"💥 Error during monitoring: {e}")
     
-    def test_single_capture(self, start_x=None, end_x=None, debug=True):
+    def test_single_capture(self, start_x=None, end_x=None, start_y=None, end_y=None, debug=True):
         """
         Test function to capture and analyze a single image
+        
+        Args:
+            start_x (int, optional): Starting x-coordinate for analysis region
+            end_x (int, optional): Ending x-coordinate for analysis region
+            start_y (int, optional): Starting y-coordinate for analysis region
+            end_y (int, optional): Ending y-coordinate for analysis region
+            debug (bool, optional): Whether to enable debug mode. Defaults to True.
         """
         print("🧪 Testing single image download...")
         
@@ -507,10 +540,19 @@ class StockChartMonitor:
             actual_start_x = max(0, min(start_x, width - 1))
             actual_end_x = max(start_x + 1, min(end_x, width))
         
+        # Calculate actual y coordinates
+        if start_y is None or end_y is None:
+            actual_start_y = 125  # Default value
+            actual_end_y = min(403, height)  # Default value
+        else:
+            actual_start_y = max(0, min(start_y, height - 1))
+            actual_end_y = max(start_y + 1, min(end_y, height))
+        
         print(f"🔍 Analysis region: x={actual_start_x} to x={actual_end_x} (width: {actual_end_x-actual_start_x}px)")
+        print(f"🔍 Analysis region: y={actual_start_y} to y={actual_end_y} (height: {actual_end_y-actual_start_y}px)")
         
         # Extract middle section
-        middle_section = self.extract_middle_section(full_image_opencv, start_x, end_x)
+        middle_section = self.extract_middle_section(full_image_opencv, start_x, end_x, start_y, end_y)
         if middle_section is None:
             print("❌ Could not extract middle section")
             return
@@ -686,13 +728,15 @@ class StockChartMonitor:
         # If debug is enabled, show the bounding box of the analyzed area
         if debug:
             height, width = full_image_opencv.shape[:2]
-            start_y = 125
-            end_y = min(403, height)
             
-            # Get the actual start_x and end_x values used
+            # Get the actual start_x, end_x, start_y, and end_y values used
             if start_x is None or end_x is None:
                 start_x = min(620, width)
                 end_x = min(652, width)
+            
+            if start_y is None or end_y is None:
+                start_y = 125
+                end_y = min(403, height)
             
             # Draw rectangle around analyzed area - only 1 pixel thick
             box_image = full_image_opencv.copy()
@@ -731,6 +775,85 @@ class StockChartMonitor:
                         
             self.save_debug_image(box_image, "analysis_region.png", debug)
             print("💾 Image with analysis region marked saved as: analysis_region.png")
+    
+    def images_are_different(self, img1, img2):
+        """
+        Compare two images to check if they are different.
+        
+        Args:
+            img1: First image (OpenCV format)
+            img2: Second image (OpenCV format)
+            
+        Returns:
+            bool: True if images are different, False if they are the same
+        """
+        # If either image is None, they are considered different
+        if img1 is None or img2 is None:
+            return True
+            
+        # Check if image dimensions match
+        if img1.shape != img2.shape:
+            return True
+            
+        # Calculate the difference
+        diff = cv2.absdiff(img1, img2)
+        
+        # If any pixel is different, the images are different
+        # Using a small threshold to account for minor variations
+        return np.sum(diff) > 100  # Adjust threshold as needed
+    
+    def save_chart_image(self, image, debug=False):
+        """
+        Save the chart image with today's date in the filename
+        
+        Args:
+            image: PIL Image object to save
+            debug: Whether to print debug information
+        
+        Returns:
+            str: Path to the saved image
+        """
+        if image is None:
+            return None
+            
+        # Generate filename with today's date
+        today = datetime.now().strftime('%Y-%m-%d')
+        filename = f"stockcharts_nysi_{today}.png"
+        
+        try:
+            # Save the image
+            image.save(filename)
+            print(f"💾 Chart image saved as: {filename}")
+            return filename
+        except Exception as e:
+            print(f"❌ Error saving chart image: {e}")
+            return None
+    
+    def load_todays_image(self):
+        """
+        Check if today's image already exists on disk and load it.
+        This ensures we don't treat an existing image as new when the script restarts.
+        """
+        today = datetime.now().strftime('%Y-%m-%d')
+        filename = f"stockcharts_nysi_{today}.png"
+        
+        # Check if today's image already exists
+        if os.path.exists(filename):
+            try:
+                # Load the image using PIL
+                pil_image = Image.open(filename)
+                # Convert to OpenCV format
+                opencv_image_rgb = np.array(pil_image.convert('RGB'))
+                opencv_image = cv2.cvtColor(opencv_image_rgb, cv2.COLOR_RGB2BGR)
+                # Store as the last saved image
+                self.last_saved_image = opencv_image
+                print(f"Loaded existing image for today: {filename}")
+            except Exception as e:
+                print(f"Error loading existing image: {e}")
+                self.last_saved_image = None
+        else:
+            print(f"No existing image found for today ({filename})")
+            self.last_saved_image = None
     
     def get_last_logged_crossing(self):
         """
@@ -840,6 +963,7 @@ class StockChartMonitor:
 
 if __name__ == "__main__":
     import sys
+    import random  # Needed for get_current_chart_url
     
     # Check for command line arguments
     if len(sys.argv) > 1:
@@ -850,16 +974,28 @@ if __name__ == "__main__":
             # Check if custom analysis region is specified
             start_x = None
             end_x = None
+            start_y = None
+            end_y = None
             
+            # Handle coordinates from command line
             if len(sys.argv) > 3:
                 try:
                     start_x = int(sys.argv[2])
                     end_x = int(sys.argv[3])
                     print(f"Using custom analysis region: x={start_x} to x={end_x}")
                 except ValueError:
-                    print("Invalid region coordinates, using defaults")
+                    print("Invalid x-region coordinates, using defaults")
             
-            monitor.test_single_capture(start_x, end_x)
+            # Handle optional y-coordinates if provided
+            if len(sys.argv) > 5:
+                try:
+                    start_y = int(sys.argv[4])
+                    end_y = int(sys.argv[5])
+                    print(f"Using custom analysis region: y={start_y} to y={end_y}")
+                except ValueError:
+                    print("Invalid y-region coordinates, using defaults")
+            
+            monitor.test_single_capture(start_x, end_x, start_y, end_y)
             
         elif sys.argv[1] == "monitor":
             interval = 30
@@ -881,18 +1017,19 @@ if __name__ == "__main__":
             monitor.monitor_line_crossings(check_interval=interval, monitoring_window=not continuous)
         else:
             print("Usage:")
-            print("  python stock_monitor.py test [start_x end_x]          # Run single capture test with optional analysis region")
-            print("  python stock_monitor.py monitor [interval] [continuous]  # Start monitoring (optional interval in seconds)")
+            print("  python stock_monitor.py test [start_x end_x [start_y end_y]]  # Run single capture test with optional analysis region")
+            print("  python stock_monitor.py monitor [interval] [continuous]       # Start monitoring (optional interval in seconds)")
     else:
         # Default behavior - show usage
         print("Stock Chart Color Monitor")
         print("Usage:")
-        print("  python stock_monitor.py test [start_x end_x]                # Run single capture test with optional analysis region")
-        print("  python stock_monitor.py monitor [interval] [continuous]     # Start monitoring (optional interval in seconds)")
+        print("  python stock_monitor.py test [start_x end_x [start_y end_y]]       # Run single capture test with optional analysis region")
+        print("  python stock_monitor.py monitor [interval] [continuous]            # Start monitoring (optional interval in seconds)")
         print("\nExamples:")
         print("  python stock_monitor.py test")
-        print("  python stock_monitor.py test 600 640                      # Analyze pixels 600-640 horizontally")
-        print("  python stock_monitor.py monitor                           # Check every 30 seconds during 9:30-10:00 AM AEST")
+        print("  python stock_monitor.py test 600 640                             # Analyze pixels 600-640 horizontally (default y region)")
+        print("  python stock_monitor.py test 600 640 200 300                     # Analyze region x=600-640, y=200-300")
+        print("  python stock_monitor.py monitor                                  # Check every 30 seconds during 9:30-10:00 AM AEST")
         print("  python stock_monitor.py monitor 60                        # Check every 60 seconds during 9:30-10:00 AM AEST")
         print("  python stock_monitor.py monitor 60 continuous             # Check every 60 seconds, 24/7")
         print("\nMonitoring Modes:")
