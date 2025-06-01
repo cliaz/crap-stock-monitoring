@@ -8,14 +8,37 @@ from io import BytesIO
 import time
 import re
 import os
+import random
 import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from datetime import datetime
 
 class StockChartMonitor:
-    def __init__(self, symbol="$NYSI"):
+    # Default analysis region coordinates
+    DEFAULT_START_Y = 125
+    DEFAULT_END_Y = 403
+    DEFAULT_START_X = 620
+    DEFAULT_END_X = 650
+    
+    # Image comparison threshold
+    IMAGE_DIFF_THRESHOLD = 100
+    
+    # Symbol constant
+    DEFAULT_SYMBOL = "$NYSI"
+    
+    # Color detection thresholds
+    RED_HUE_LOWER1 = np.array([0, 30, 30])
+    RED_HUE_UPPER1 = np.array([15, 255, 255])
+    RED_HUE_LOWER2 = np.array([165, 30, 30])
+    RED_HUE_UPPER2 = np.array([180, 255, 255])
+    BLACK_HUE_LOWER = np.array([0, 0, 0])
+    BLACK_HUE_UPPER = np.array([180, 150, 100])
+    
+    def __init__(self, symbol=DEFAULT_SYMBOL):
         self.symbol = symbol
+        # Generate log file name based on symbol (without $ character)
+        self.LOG_FILE = f"{symbol.replace('$', '')}_changes.txt"
         self.base_url = f"https://stockcharts.com/sc3/ui/?s={symbol}"
         self.session = requests.Session()
         self.session.headers.update({
@@ -27,13 +50,15 @@ class StockChartMonitor:
     
     def get_current_chart_url(self):
         """Generate the current chart URL using StockCharts' direct API"""
-        import random
+        # Use the random module already imported at the top level
         
         # Generate parameters similar to what StockCharts uses
         random_id = random.randint(1000000000, 9999999999)  # 10-digit random number
         timestamp = int(time.time() * 1000)  # Current timestamp in milliseconds
         
-        chart_url = f"https://stockcharts.com/c-sc/sc?s=%24NYSI&p=D&yr=1&mn=0&dy=0&i=t{random_id}c&r={timestamp}"
+        # Use self.symbol instead of hardcoded value
+        symbol_encoded = self.symbol.replace('$', '%24')  # URL encode the $ if present
+        chart_url = f"https://stockcharts.com/c-sc/sc?s={symbol_encoded}&p=D&yr=1&mn=0&dy=0&i=t{random_id}c&r={timestamp}"
         
         return chart_url
     
@@ -91,15 +116,15 @@ class StockChartMonitor:
         # Define middle section with specific pixel measurements
         # Use provided vertical bounds if specified, otherwise use defaults
         if start_y is None:
-            start_y = 125
+            start_y = self.DEFAULT_START_Y
         if end_y is None:
-            end_y = 403
+            end_y = self.DEFAULT_END_Y
         
         # Use provided horizontal bounds if specified, otherwise use defaults
         if start_x is None or end_x is None:
-            # Default: analyze pixels from 620 to 650
-            start_x = min(620, width)
-            end_x = min(650, width)
+            # Default: analyze pixels from defined constants
+            start_x = min(self.DEFAULT_START_X, width)
+            end_x = min(self.DEFAULT_END_X, width)
         else:
             # Ensure we don't exceed image dimensions
             start_x = max(0, min(start_x, width - 1))
@@ -131,16 +156,14 @@ class StockChartMonitor:
         hsv = cv2.cvtColor(image_section, cv2.COLOR_BGR2HSV)
         
         # Define color ranges for red and black
-        red_lower1 = np.array([0, 30, 30])
-        red_upper1 = np.array([15, 255, 255])
-        red_lower2 = np.array([165, 30, 30])
-        red_upper2 = np.array([180, 255, 255])
+        red_lower1 = self.RED_HUE_LOWER1
+        red_upper1 = self.RED_HUE_UPPER1
+        red_lower2 = self.RED_HUE_LOWER2
+        red_upper2 = self.RED_HUE_UPPER2
         
         # Relaxed thresholds for black to detect faint black pixels
-        black_lower = np.array([0, 0, 0])
-        #black_upper = np.array([180, 100, 80])     # Initial saturation and value thresholds. Were too strict, 
-                                                    # didn't detect faint black lines. Kept for posterity.
-        black_upper = np.array([180, 150, 100])     # Increased saturation and value thresholds
+        black_lower = self.BLACK_HUE_LOWER
+        black_upper = self.BLACK_HUE_UPPER
         
         # Create masks
         red_mask1 = cv2.inRange(hsv, red_lower1, red_upper1)
@@ -284,7 +307,7 @@ class StockChartMonitor:
             send_email (bool): Whether to send an email notification (default: True)
             silent (bool): Whether to suppress logging message to console (default: False)
         """
-        log_file = "nysi_changes.txt"
+        log_file = self.LOG_FILE
         timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         
         # Remove emojis and other special characters from message for log file
@@ -539,16 +562,16 @@ class StockChartMonitor:
         
         # Calculate actual x coordinates
         if start_x is None or end_x is None:
-            actual_start_x = min(620, width)
-            actual_end_x = min(652, width)
+            actual_start_x = min(self.DEFAULT_START_X, width)
+            actual_end_x = min(self.DEFAULT_END_X, width)
         else:
             actual_start_x = max(0, min(start_x, width - 1))
             actual_end_x = max(start_x + 1, min(end_x, width))
         
         # Calculate actual y coordinates
         if start_y is None or end_y is None:
-            actual_start_y = 125  # Default value
-            actual_end_y = min(403, height)  # Default value
+            actual_start_y = self.DEFAULT_START_Y  # Default value
+            actual_end_y = min(self.DEFAULT_END_Y, height)  # Default value
         else:
             actual_start_y = max(0, min(start_y, height - 1))
             actual_end_y = max(start_y + 1, min(end_y, height))
@@ -736,12 +759,12 @@ class StockChartMonitor:
             
             # Get the actual start_x, end_x, start_y, and end_y values used
             if start_x is None or end_x is None:
-                start_x = min(620, width)
-                end_x = min(652, width)
+                start_x = min(self.DEFAULT_START_X, width)
+                end_x = min(self.DEFAULT_END_X, width)
             
             if start_y is None or end_y is None:
-                start_y = 125
-                end_y = min(403, height)
+                start_y = self.DEFAULT_START_Y
+                end_y = min(self.DEFAULT_END_Y, height)
             
             # Draw rectangle around analyzed area - only 1 pixel thick
             box_image = full_image_opencv.copy()
@@ -805,7 +828,7 @@ class StockChartMonitor:
         
         # If any pixel is different, the images are different
         # Using a small threshold to account for minor variations
-        return np.sum(diff) > 100  # Adjust threshold as needed
+        return np.sum(diff) > self.IMAGE_DIFF_THRESHOLD
     
     def save_chart_image(self, image, debug=False):
         """
@@ -823,7 +846,8 @@ class StockChartMonitor:
             
         # Generate filename with today's date
         today = datetime.now().strftime('%Y-%m-%d')
-        filename = f"stockcharts_nysi_{today}.png"
+        symbol_name = self.symbol.replace('$', '')
+        filename = f"stockcharts_{symbol_name}_{today}.png"
         
         try:
             # Save the image
@@ -840,19 +864,29 @@ class StockChartMonitor:
         This ensures we don't treat an existing image as new when the script restarts.
         """
         today = datetime.now().strftime('%Y-%m-%d')
-        filename = f"stockcharts_nysi_{today}.png"
+        symbol_name = self.symbol.replace('$', '')
+        filename = f"stockcharts_{symbol_name}_{today}.png"
         
         # Check if today's image already exists
         if os.path.exists(filename):
             try:
                 # Load the image using PIL
                 pil_image = Image.open(filename)
+                # Check if the file is a valid image
+                pil_image.verify()  # Verify it's an image
+                
+                # Need to reopen after verify
+                pil_image = Image.open(filename)
+                
                 # Convert to OpenCV format
                 opencv_image_rgb = np.array(pil_image.convert('RGB'))
                 opencv_image = cv2.cvtColor(opencv_image_rgb, cv2.COLOR_RGB2BGR)
                 # Store as the last saved image
                 self.last_saved_image = opencv_image
                 print(f"Loaded existing image for today: {filename}")
+            except (IOError, SyntaxError) as e:
+                print(f"Error loading existing image (invalid format): {e}")
+                self.last_saved_image = None
             except Exception as e:
                 print(f"Error loading existing image: {e}")
                 self.last_saved_image = None
@@ -865,7 +899,7 @@ class StockChartMonitor:
         Read the log file and extract the most recent crossing type.
         Returns "no_crossing" if the log file doesn't exist or no crossing is found.
         """
-        log_file = "nysi_changes.txt"
+        log_file = self.LOG_FILE
         
         # Check if log file exists
         if not os.path.exists(log_file):
@@ -918,7 +952,7 @@ class StockChartMonitor:
             return True
             
         # Check if we've already logged this crossing type today
-        log_file = "nysi_changes.txt"
+        log_file = self.LOG_FILE
         today = datetime.now().strftime('%Y-%m-%d')
         
         # Check if log file exists
@@ -946,7 +980,8 @@ class StockChartMonitor:
                     else:
                         # It's a new day, log it
                         return True
-                     # If we didn't find any previous entries with this crossing, log it
+            
+            # If we didn't find any previous entries with this crossing, log it
             return True
                 
         except Exception as e:
@@ -968,7 +1003,6 @@ class StockChartMonitor:
 
 if __name__ == "__main__":
     import sys
-    import random  # Needed for get_current_chart_url
     
     # Check for command line arguments
     if len(sys.argv) > 1:
@@ -1048,5 +1082,5 @@ if __name__ == "__main__":
         print("    sender_password_password = \"your-app-password\"")
         print("    recipients = [\"recipient1@example.com\", \"recipient2@example.com\"]")
         print("\nLogging:")
-        print("  All transitions and current colors will be logged to nysi_changes.txt with timestamps")
+        print("  All transitions and current colors will be logged to a text file (SYMBOL_changes.txt) with timestamps")
         print("  Color transitions trigger email notifications, current color updates don't")
