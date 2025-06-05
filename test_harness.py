@@ -9,12 +9,12 @@ import cv2
 import numpy as np
 from PIL import Image
 
-# Import necessary classes from stock_monitor_optimized.py
+# Import necessary classes from stock_monitor.py
 try:
-    from stock_monitor_optimized import ImageProcessor, NotificationManager, StockChartMonitor
+    from stock_monitor import ImageProcessor, NotificationManager, StockChartMonitor
 except ImportError:
-    print("Error: Could not import from stock_monitor_optimized.py")
-    print("Make sure you're running this script from the same directory as stock_monitor_optimized.py")
+    print("Error: Could not import from stock_monitor.py")
+    print("Make sure you're running this script from the same directory as stock_monitor.py")
     sys.exit(1)
 
 class TestHarness:
@@ -51,6 +51,30 @@ class TestHarness:
         
         print(f"🧪 Test harness initialized for {symbol}")
         print(f"📝 Using test log file: {self.notification_mgr.log_file}")
+        
+        # Check if log file exists and show the most recent color
+        if os.path.exists(self.notification_mgr.log_file):
+            try:
+                last_color = None
+                last_color_date = None
+                
+                with open(self.notification_mgr.log_file, 'r') as f:
+                    lines = f.readlines()
+                    
+                    for line in reversed(lines):
+                        if "Current line color:" in line:
+                            color_match = re.search(r"Current line color: (red|black)", line)
+                            date_match = re.search(r"^\[([\d-]+)", line)
+                            
+                            if color_match and date_match:
+                                last_color = color_match.group(1)
+                                last_color_date = date_match.group(1)
+                                break
+                
+                if last_color and last_color_date:
+                    print(f"🔍 Most recent detected color in test log: {last_color.upper()} (detected on {last_color_date})")
+            except Exception as e:
+                print(f"⚠️ Error reading test log file: {e}")
         
         # Clear the test log file at initialization
         self._clear_log_file()

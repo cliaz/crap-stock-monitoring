@@ -885,6 +885,41 @@ class StockChartMonitor:
         print(f"Starting to monitor {self.symbol} for line crossings")
         print(f"Checking every {check_interval} seconds")
         
+        # Log that monitoring has started
+        start_message = f"Monitoring started for {self.symbol}"
+        print(f"📝 {start_message}")
+        self.notification_mgr.log_transition(start_message, "monitoring_started", send_email=False)
+        
+        # Check if log file exists and show the most recent color
+        log_file = self.notification_mgr.log_file
+        if os.path.exists(log_file):
+            print(f"📊 Existing log file detected: {log_file}")
+            try:
+                last_color = None
+                last_color_date = None
+                
+                with open(log_file, 'r') as f:
+                    lines = f.readlines()
+                    
+                    for line in reversed(lines):
+                        if "Current line color:" in line:
+                            color_match = re.search(r"Current line color: (red|black)", line)
+                            date_match = re.search(r"^\[([\d-]+)", line)
+                            
+                            if color_match and date_match:
+                                last_color = color_match.group(1)
+                                last_color_date = date_match.group(1)
+                                break
+                
+                if last_color and last_color_date:
+                    print(f"🔍 Most recent detected color: {last_color.upper()} (detected on {last_color_date})")
+                else:
+                    print("🔍 No previous color detection found in log file")
+            except Exception as e:
+                print(f"⚠️ Error reading log file: {e}")
+        else:
+            print(f"📊 No existing log file found. Will create {log_file} when first transition is detected")
+        
         if monitoring_window:
             print(f"Will check between 9:30 AM and 10:00 AM AEST only")
             print("Outside the monitoring window: No output will be shown until the window starts")
@@ -1038,9 +1073,15 @@ class StockChartMonitor:
                 time.sleep(check_interval)
                 
         except KeyboardInterrupt:
-            print("\n🛑 Monitoring stopped by user")
+            # Log that monitoring was stopped by the user
+            stop_message = "Monitoring stopped by user"
+            print(f"\n🛑 {stop_message}")
+            self.notification_mgr.log_transition(stop_message, "monitoring_stopped", send_email=False)
         except Exception as e:
-            print(f"💥 Error during monitoring: {e}")
+            # Log that monitoring stopped due to an error
+            error_message = f"Monitoring stopped due to error: {e}"
+            print(f"💥 {error_message}")
+            self.notification_mgr.log_transition(error_message, "monitoring_error", send_email=False)
 
 
 def parse_args():
@@ -1120,15 +1161,15 @@ def main():
         # If no command is specified, show usage
         print("Stock Chart Color Monitor")
         print("Usage:")
-        print("  python stock_monitor_optimized.py test [--symbol SYMBOL] [--x-region START_X END_X] [--y-region START_Y END_Y] [--no-debug]")
-        print("  python stock_monitor_optimized.py monitor [--symbol SYMBOL] [--interval SECONDS] [--continuous]")
+        print("  python stock_monitor.py test [--symbol SYMBOL] [--x-region START_X END_X] [--y-region START_Y END_Y] [--no-debug]")
+        print("  python stock_monitor.py monitor [--symbol SYMBOL] [--interval SECONDS] [--continuous]")
         print("\nExamples:")
-        print("  python stock_monitor_optimized.py test")
-        print("  python stock_monitor_optimized.py test --x-region 600 640")
-        print("  python stock_monitor_optimized.py test --x-region 600 640 --y-region 200 300")
-        print("  python stock_monitor_optimized.py monitor")
-        print("  python stock_monitor_optimized.py monitor --interval 60")
-        print("  python stock_monitor_optimized.py monitor --interval 60 --continuous")
+        print("  python stock_monitor.py test")
+        print("  python stock_monitor.py test --x-region 600 640")
+        print("  python stock_monitor.py test --x-region 600 640 --y-region 200 300")
+        print("  python stock_monitor.py monitor")
+        print("  python stock_monitor.py monitor --interval 60")
+        print("  python stock_monitor.py monitor --interval 60 --continuous")
         print("\nMonitoring Modes:")
         print("  Default mode: Only checks during 9:30-10:00 AM AEST (Australian Eastern Standard Time)")
         print("  Continuous mode: Checks 24/7 regardless of time")
