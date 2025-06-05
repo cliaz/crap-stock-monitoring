@@ -4,7 +4,10 @@ import requests
 import cv2
 import numpy as np
 from PIL import Image
-from io import BytesIO
+from io import BytesIO  # Required for image download
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
+from datetime import datetime
 import time
 import re
 import os
@@ -12,9 +15,6 @@ import random
 import smtplib
 import sys
 import argparse
-from email.mime.text import MIMEText
-from email.mime.multipart import MIMEMultipart
-from datetime import datetime
 
 # Check for required pytz dependency
 try:
@@ -352,7 +352,7 @@ class NotificationManager:
         # Generate log file name based on symbol (without $ character)
         self.log_file = f"{symbol.replace('$', '')}_changes.txt"
     
-    def log_transition(self, message, crossing_type, send_email=True, silent=False):
+    def log_transition(self, message, crossing_type, send_email=True, silent=True):
         """
         Log a transition event to a file with timestamp and send email notification
         
@@ -360,7 +360,7 @@ class NotificationManager:
             message (str): The message to log
             crossing_type (str): The type of crossing detected (e.g., 'red_to_black', 'black_to_red')
             send_email (bool): Whether to send an email notification (default: True)
-            silent (bool): Whether to suppress logging message to console (default: False)
+            silent (bool): Whether to suppress logging message to console (default: True)
         """
         log_file = self.log_file
         timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
@@ -882,12 +882,11 @@ class StockChartMonitor:
         - monitoring_window: Whether to only monitor during specific hours (default: True)
                              If False, will monitor continuously
         """
-        print(f"Starting to monitor {self.symbol} for line crossings")
+        # Only print a single clear startup message
         print(f"Checking every {check_interval} seconds")
         
         # Log that monitoring has started
         start_message = f"Monitoring started for {self.symbol}"
-        print(f"📝 {start_message}")
         self.notification_mgr.log_transition(start_message, "monitoring_started", send_email=False)
         
         # Check if log file exists and show the most recent color
