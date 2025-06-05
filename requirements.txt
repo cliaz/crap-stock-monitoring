@@ -3,5 +3,4 @@ opencv-python>=4.8.0
 Pillow>=10.0.0
 numpy>=1.24.0
 pytz>=2025.1
-smtplib3>=0.2.0
 python-dateutil>=2.8.2

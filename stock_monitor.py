@@ -10,54 +10,31 @@ import re
 import os
 import random
 import smtplib
+import sys
+import argparse
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from datetime import datetime
 
-class StockChartMonitor:
-    # Default analysis region coordinates
-    DEFAULT_START_Y = 125
-    DEFAULT_END_Y = 403
-    DEFAULT_START_X = 620
-    DEFAULT_END_X = 650
+class ChartWebInteraction:
+    """Handles all web interactions and image downloads"""
     
-    # Image comparison threshold
-    IMAGE_DIFF_THRESHOLD = 100
-    
-    # Symbol constant
-    DEFAULT_SYMBOL = "$NYSI"
-    
-    # Color detection thresholds
-    RED_HUE_LOWER1 = np.array([0, 30, 30])
-    RED_HUE_UPPER1 = np.array([15, 255, 255])
-    RED_HUE_LOWER2 = np.array([165, 30, 30])
-    RED_HUE_UPPER2 = np.array([180, 255, 255])
-    BLACK_HUE_LOWER = np.array([0, 0, 0])
-    BLACK_HUE_UPPER = np.array([180, 150, 100])
-    
-    def __init__(self, symbol=DEFAULT_SYMBOL):
+    def __init__(self, symbol):
         self.symbol = symbol
-        # Generate log file name based on symbol (without $ character)
-        self.LOG_FILE = f"{symbol.replace('$', '')}_changes.txt"
         self.base_url = f"https://stockcharts.com/sc3/ui/?s={symbol}"
         self.session = requests.Session()
         self.session.headers.update({
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
         })
-        self.last_saved_image = None  # Store the last saved image for comparison
-        # Check if today's image already exists and load it
-        self.load_todays_image()
     
     def get_current_chart_url(self):
         """Generate the current chart URL using StockCharts' direct API"""
-        # Use the random module already imported at the top level
-        
         # Generate parameters similar to what StockCharts uses
         random_id = random.randint(1000000000, 9999999999)  # 10-digit random number
         timestamp = int(time.time() * 1000)  # Current timestamp in milliseconds
         
-        # Use self.symbol instead of hardcoded value
-        symbol_encoded = self.symbol.replace('$', '%24')  # URL encode the $ if present
+        # URL encode the $ if present
+        symbol_encoded = self.symbol.replace('$', '%24')
         chart_url = f"https://stockcharts.com/c-sc/sc?s={symbol_encoded}&p=D&yr=1&mn=0&dy=0&i=t{random_id}c&r={timestamp}"
         
         return chart_url
@@ -91,6 +68,27 @@ class StockChartMonitor:
         except Exception as e:
             print(f"Error processing image: {e}")
             return None
+
+
+class ImageProcessor:
+    """Handles image processing and analysis"""
+    
+    # Default analysis region coordinates
+    DEFAULT_START_Y = 125
+    DEFAULT_END_Y = 403
+    DEFAULT_START_X = 620
+    DEFAULT_END_X = 650
+    
+    # Image comparison threshold
+    IMAGE_DIFF_THRESHOLD = 100
+    
+    # Color detection thresholds
+    RED_HUE_LOWER1 = np.array([0, 30, 30])
+    RED_HUE_UPPER1 = np.array([15, 255, 255])
+    RED_HUE_LOWER2 = np.array([165, 30, 30])
+    RED_HUE_UPPER2 = np.array([180, 255, 255])
+    BLACK_HUE_LOWER = np.array([0, 0, 0])
+    BLACK_HUE_UPPER = np.array([180, 150, 100])
     
     def save_debug_image(self, image, filename, debug_mode=False):
         """Save an image to disk for debugging purposes - only if debug_mode is True"""
@@ -137,6 +135,18 @@ class StockChartMonitor:
         middle_section = image[start_y:end_y, start_x:end_x]
         return middle_section
     
+    def get_rightmost_column_color(self, column_colors):
+        """Get the color of the rightmost column that isn't 'unknown'"""
+        if not column_colors:
+            return "unknown"
+            
+        # Start from the rightmost column and go backwards
+        for color in reversed(column_colors):
+            if color != "unknown":
+                return color
+                
+        return "unknown"
+    
     def detect_line_crossing(self, image_section, debug=False):
         """
         Detect if a contiguous line changes color from red to black or black to red.
@@ -174,6 +184,348 @@ class StockChartMonitor:
         
         # Get image dimensions
         height, width = image_section.shape[:2]
+        
+        # We'll analyze column by column to detect horizontal transitions
+        # For each column, we'll determine the dominant color
+        column_colors = []
+        column_data = []  # Store detailed pixel counts for debug mode
+        
+        # Analyze middle 50% of height to focus on the main chart line
+        middle_top = height // 4
+        middle_bottom = 3 * height // 4
+        
+        for x in range(width):
+            # Count red and black pixels in this column (middle section)
+            col_red_pixels = cv2.countNonZero(red_mask[middle_top:middle_bottom, x:x+1])
+            col_black_pixels = cv2.countNonZero(black_mask[middle_top:middle_bottom, x:x+1])
+            
+            # Adjust for the fixed red line that's present in every column (subtract 1 from red pixel count)
+            adjusted_red_pixels = max(0, col_red_pixels - 1)
+            
+            # Store detailed pixel counts for debug mode
+            if debug:
+                # Calculate a color strength ratio for easier analysis
+                red_ratio = 0
+                if col_black_pixels > 0:
+                    red_ratio = adjusted_red_pixels / col_black_pixels if col_black_pixels > 0 else float('inf')
+                else:
+                    red_ratio = float('inf') if adjusted_red_pixels > 0 else 0
+                
+                column_data.append({
+                    "column": x,
+                    "red_pixels_raw": int(col_red_pixels),
+                    "red_pixels": int(adjusted_red_pixels),  # Store adjusted value
+                    "black_pixels": int(col_black_pixels),
+                    "total_analyzed_pixels": middle_bottom - middle_top,
+                    "red_percentage": int(adjusted_red_pixels / (middle_bottom - middle_top) * 100) if (middle_bottom - middle_top) > 0 else 0,
+                    "black_percentage": int(col_black_pixels / (middle_bottom - middle_top) * 100) if (middle_bottom - middle_top) > 0 else 0,
+                    "red_to_black_ratio": red_ratio  # Higher ratio means more red relative to black
+                })
+            
+            # Determine dominant color for this column using adjusted red pixel count
+            if adjusted_red_pixels > 0 and adjusted_red_pixels >= col_black_pixels:
+                column_colors.append("red")
+            elif col_black_pixels > 0 and col_black_pixels >= adjusted_red_pixels:
+                column_colors.append("black")
+            else:
+                column_colors.append("unknown")
+        
+        if debug:
+            # Create a visualization of the column colors
+            color_map = image_section.copy()
+            for x, color in enumerate(column_colors):
+                if color == "red":
+                    color_map[:, x] = [0, 0, 255]  # Red in BGR
+                elif color == "black":
+                    color_map[:, x] = [0, 0, 0]    # Black
+                else:
+                    color_map[:, x] = [128, 128, 128]  # Gray for unknown
+            
+            # Mark transition points with vertical lines
+            for i in range(1, len(column_colors)):
+                if (column_colors[i-1] == "red" and column_colors[i] == "black") or \
+                   (column_colors[i-1] == "black" and column_colors[i] == "red"):
+                    # Add a bright green vertical line at transition point
+                    color_map[:, i] = [0, 255, 0]  # Green in BGR
+                    
+            self.save_debug_image(color_map, "color_transition_map.png", debug)
+        
+        # Analyze the color transitions
+        # We need at least some columns of each color to detect a crossing
+        if "red" not in column_colors or "black" not in column_colors:
+            if debug:
+                print("DEBUG: No transition possible - only one color present")
+            if debug:
+                return "no_crossing", {
+                    "column_colors": column_colors,
+                    "column_data": column_data,
+                    "rightmost_color": self.get_rightmost_column_color(column_colors),
+                    "transitions": {
+                        "red_to_black": [],
+                        "black_to_red": []
+                    }
+                }
+            return "no_crossing", self.get_rightmost_column_color(column_colors)
+        
+        # Track transitions with their positions
+        red_to_black_transitions = []
+        black_to_red_transitions = []
+        
+        for i in range(1, len(column_colors)):
+            if column_colors[i-1] == "red" and column_colors[i] == "black":
+                red_to_black_transitions.append(i)
+            elif column_colors[i-1] == "black" and column_colors[i] == "red":
+                black_to_red_transitions.append(i)
+        
+        # Count transitions
+        red_to_black_count = len(red_to_black_transitions)
+        black_to_red_count = len(black_to_red_transitions)
+        
+        # Determine the dominant transition
+        if red_to_black_count > black_to_red_count and red_to_black_count > 0:
+            result = "red_to_black"
+        elif black_to_red_count > red_to_black_count and black_to_red_count > 0:
+            result = "black_to_red"
+        else:
+            # If there are equal transitions or no clear pattern
+            result = "no_crossing"
+        
+        # Get the color of the rightmost column
+        rightmost_color = self.get_rightmost_column_color(column_colors)
+        
+        if debug:
+            # Return detailed data for test mode
+            return result, {
+                "column_colors": column_colors,
+                "column_data": column_data,
+                "rightmost_color": rightmost_color,
+                "transitions": {
+                    "red_to_black": red_to_black_transitions,
+                    "black_to_red": black_to_red_transitions
+                }
+            }
+        
+        # For normal mode, return a tuple of (crossing type, rightmost color)
+        return result, rightmost_color
+    
+    def images_are_different(self, img1, img2):
+        """
+        Compare two images to check if they are different.
+        
+        Args:
+            img1: First image (OpenCV format)
+            img2: Second image (OpenCV format)
+            
+        Returns:
+            bool: True if images are different, False if they are the same
+        """
+        # If either image is None, they are considered different
+        if img1 is None or img2 is None:
+            return True
+            
+        # Check if image dimensions match
+        if img1.shape != img2.shape:
+            return True
+            
+        # Calculate the difference
+        diff = cv2.absdiff(img1, img2)
+        
+        # If any pixel is different, the images are different
+        non_zero_count = cv2.countNonZero(cv2.cvtColor(diff, cv2.COLOR_BGR2GRAY))
+        return non_zero_count > self.IMAGE_DIFF_THRESHOLD
+
+
+class NotificationManager:
+    """Handles logging and notifications"""
+    
+    def __init__(self, symbol):
+        self.symbol = symbol
+        # Generate log file name based on symbol (without $ character)
+        self.log_file = f"{symbol.replace('$', '')}_changes.txt"
+    
+    def log_transition(self, message, crossing_type, send_email=True, silent=False):
+        """
+        Log a transition event to a file with timestamp and send email notification
+        
+        Args:
+            message (str): The message to log
+            crossing_type (str): The type of crossing detected (e.g., 'red_to_black', 'black_to_red')
+            send_email (bool): Whether to send an email notification (default: True)
+            silent (bool): Whether to suppress logging message to console (default: False)
+        """
+        log_file = self.log_file
+        timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        
+        # Remove emojis and other special characters from message for log file
+        clean_message = re.sub(r'[^\x00-\x7F]+', '', message)
+        
+        # Format the log entry
+        log_entry = f"[{timestamp}] {clean_message}"
+        
+        # Write to log file
+        with open(log_file, 'a') as f:
+            f.write(log_entry + '\n')
+        
+        if not silent:
+            print(f"📝 Logged event to {log_file}")
+        
+        # Send email notification if requested
+        if send_email:
+            self.send_email_notification(message, crossing_type)
+    
+    def send_email_notification(self, message, crossing_type):
+        """
+        Send email notification about a transition
+        """
+        # Try to import email details from email_details.py
+        try:
+            # Import variables directly from email_details.py
+            from email_details import sender_email, sender_password_password as sender_password, recipients
+            
+            # Check if email credentials are configured
+            if not sender_email or not sender_password:
+                print("⚠️ Email notification skipped: Missing email credentials")
+                return
+                
+            if not recipients:
+                print("⚠️ No recipients specified in email_details.py")
+                print("Using sender as recipient")
+                recipients = [sender_email]
+            
+            # Create email
+            subject = f"{self.symbol} Alert: {crossing_type.replace('_', ' ').title()} Transition Detected"
+            
+            # Create the email content
+            msg = MIMEMultipart()
+            msg['From'] = sender_email
+            msg['To'] = ", ".join(recipients)
+            msg['Subject'] = subject
+            
+            # Create the email body with HTML formatting
+            html = f"""
+            <html>
+            <body>
+                <h2>Stock Chart Transition Alert</h2>
+                <p><strong>Time:</strong> {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</p>
+                <p><strong>Symbol:</strong> {self.symbol}</p>
+                <p><strong>Event:</strong> {crossing_type.replace('_', ' ').title()} Transition</p>
+                <p><strong>Details:</strong> {message}</p>
+                <p>This is an automated alert from your Stock Chart Monitor.</p>
+            </body>
+            </html>
+            """
+            
+            msg.attach(MIMEText(html, 'html'))
+            
+            try:
+                # Connect to Gmail SMTP server
+                server = smtplib.SMTP('smtp.gmail.com', 587)
+                server.starttls()
+                
+                # Login to email account
+                server.login(sender_email, sender_password)
+                
+                # Send email
+                server.send_message(msg)
+                server.quit()
+                print(f"📧 Email notification sent to {', '.join(recipients)}")
+            except Exception as e:
+                print(f"❌ Failed to send email notification: {e}")
+                
+        except ImportError as e:
+            print(f"⚠️ Error importing email configuration: {e}")
+            print("Please make sure email_details.py is properly configured")
+        except Exception as e:
+            print(f"⚠️ Error in email configuration: {e}")
+    
+    def get_last_logged_crossing(self):
+        """
+        Get the last line crossing event from the log file
+        
+        Returns:
+            str: The last crossing event type, or "no_crossing" if none found
+        """
+        log_file = self.log_file
+        
+        # Check if log file exists
+        if not os.path.exists(log_file):
+            return "no_crossing"
+            
+        try:
+            # Read the last line of the log file
+            with open(log_file, 'r') as f:
+                lines = f.readlines()
+                
+            if not lines:
+                return "no_crossing"
+                
+            # Find the most recent line with a crossing event (not a color update)
+            for line in reversed(lines):
+                if "Line crossing detected:" in line:
+                    # Extract the crossing type from the log entry
+                    match = re.search(r"Line crossing detected: (red_to_black|black_to_red)", line)
+                    if match:
+                        return match.group(1)
+            
+            # If no crossing detected in log
+            return "no_crossing"
+            
+        except Exception as e:
+            print(f"⚠️ Error reading log file: {e}")
+            return "no_crossing"
+    
+    def should_log_transition(self, current_crossing):
+        """
+        Determine if a crossing should be logged based on previous log entries
+        
+        Rules:
+        1. Always log if it's a different crossing type than the last one
+        2. Only log if we haven't already logged this crossing type today
+        
+        Args:
+            current_crossing: The current crossing type detected
+            
+        Returns:
+            bool: True if we should log this crossing, False otherwise
+        """
+        # No need to log if no crossing detected
+        if current_crossing == "no_crossing":
+            return False
+            
+        # Always log if different from last crossing
+        last_crossing = self.get_last_logged_crossing()
+        if last_crossing != current_crossing:
+            return True
+            
+        # Check if we've already logged this crossing type today
+        log_file = self.log_file
+        today = datetime.now().strftime('%Y-%m-%d')
+        
+        # Check if log file exists
+        if not os.path.exists(log_file):
+            return True
+            
+        try:
+            # Read all lines in the log file
+            with open(log_file, 'r') as f:
+                lines = f.readlines()
+                
+            # Look for entries from today with the same crossing type
+            today_pattern = f"\\[{today}"
+            crossing_pattern = f"Line crossing detected: {current_crossing}"
+            
+            for line in lines:
+                if re.search(today_pattern, line) and crossing_pattern in line:
+                    # Already logged this crossing type today
+                    return False
+                    
+            # If we get here, we haven't logged this crossing type today
+            return True
+            
+        except Exception as e:
+            print(f"⚠️ Error checking log file: {e}")
+            # If there's an error, log anyway
+            return True
         
         # We'll analyze column by column to detect horizontal transitions
         # For each column, we'll determine the dominant color
