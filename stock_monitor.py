@@ -368,8 +368,20 @@ class NotificationManager:
         # Remove emojis and other special characters from message for log file
         clean_message = re.sub(r'[^\x00-\x7F]+', '', message)
         
-        # Format the log entry
-        log_entry = f"[{timestamp}] {clean_message}"
+        # Split multi-line messages and add timestamp to each line
+        lines = clean_message.split('\n')
+        formatted_lines = []
+        
+        for i, line in enumerate(lines):
+            # Only the first line gets the original timestamp
+            if i == 0:
+                formatted_lines.append(f"[{timestamp}] {line}")
+            else:
+                # Add timestamp to additional lines if they exist
+                formatted_lines.append(f"[{timestamp}] {line}")
+        
+        # Join the formatted lines back together
+        log_entry = '\n'.join(formatted_lines)
         
         # Write to log file
         with open(log_file, 'a') as f:
@@ -967,14 +979,72 @@ class StockChartMonitor:
                              MONITORING_END_HOUR:MONITORING_END_MINUTE in the TIMEZONE timezone
                              If False, will monitor continuously
         """
-        # Log that monitoring has started
-        start_message = f"Monitoring started for {self.symbol}"
+        # Gather information for the comprehensive log entry
+        from datetime import datetime, time as dt_time
+        import glob
+        
+        # Get most recent chart image info
+        most_recent_chart = None
+        charts_dir = "downloaded_charts"
+        clean_symbol = self.symbol.replace('$', '')
+        pattern = os.path.join(charts_dir, f"stockcharts_{clean_symbol}_*.png")
+        image_files = glob.glob(pattern)
+        if image_files:
+            # Sort files by date in filename (descending)
+            def extract_date(f):
+                m = re.search(r"_(\d{4}-\d{2}-\d{2})\.png$", f)
+                if m:
+                    try:
+                        return datetime.strptime(m.group(1), "%Y-%m-%d")
+                    except Exception:
+                        return datetime.min
+                return datetime.min
+            image_files.sort(key=extract_date, reverse=True)
+            most_recent_chart = image_files[0]
+        
+        # Check for most recent color in the log file
+        last_color = None
+        last_color_date = None
+        log_file = self.notification_mgr.log_file
+        if os.path.exists(log_file):
+            try:
+                with open(log_file, 'r') as f:
+                    lines = f.readlines()
+                    
+                for line in reversed(lines):
+                    if "Current line color:" in line:
+                        color_match = re.search(r"Current line color: (red|black)", line)
+                        date_match = re.search(r"^\[([\d-]+)", line)
+                        
+                        if color_match and date_match:
+                            last_color = color_match.group(1)
+                            last_color_date = date_match.group(1)
+                            break
+            except Exception:
+                pass
+        
+        # Get timezone information
+        aest_timezone = pytz.timezone(self.TIMEZONE)
+        timezone_abbr = aest_timezone.localize(datetime.now()).strftime('%Z')
+        
+        # Build the comprehensive start message
+        start_message = f"Monitoring started for {self.symbol} with {check_interval} second interval"
+        
+        if most_recent_chart:
+            start_message += f"\nMost recent chart image: {most_recent_chart}"
+            
+        if last_color and last_color_date:
+            start_message += f"\nMost recent detected color: {last_color.upper()} (detected on {last_color_date})"
+        
+        if monitoring_window:
+            start_message += f"\nMonitoring window: {self.MONITORING_START_HOUR}:{self.MONITORING_START_MINUTE:02d} AM - {self.MONITORING_END_HOUR}:{self.MONITORING_END_MINUTE:02d} AM {timezone_abbr} ({self.TIMEZONE})"
+        else:
+            start_message += "\nMonitoring continuously (24/7)"
+            
+        # Log the comprehensive start message
         self.notification_mgr.log_transition(start_message, "monitoring_started", send_email=False)
 
         # Check for a recent saved chart in downloaded_charts and log it
-        from datetime import datetime
-        charts_dir = "downloaded_charts"
-        clean_symbol = self.symbol.replace('$', '')
         date_str = datetime.now().strftime('%Y-%m-%d')
         filename = f"stockcharts_{clean_symbol}_{date_str}.png"
         filepath = os.path.join(charts_dir, filename)
@@ -983,7 +1053,6 @@ class StockChartMonitor:
             self.notification_mgr.log_transition(log_msg, "recent_saved_chart", send_email=False)
 
         # Check if log file exists and show the most recent color
-        log_file = self.notification_mgr.log_file
         if os.path.exists(log_file):
             print(f"📊 Existing log file detected: {log_file}")
             try:
