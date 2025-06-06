@@ -583,6 +583,7 @@ class StockChartMonitor:
         self.image_processor = ImageProcessor()
         self.notification_mgr = NotificationManager(symbol)
         self.last_saved_image = None  # Store the last saved image for comparison
+        self.last_saved_image_path = None  # Store the filename of the last saved image
         self._load_most_recent_saved_image()  # Load the most recent image at startup
     
     def _load_most_recent_saved_image(self):
@@ -596,6 +597,7 @@ class StockChartMonitor:
         image_files = glob.glob(pattern)
         if not image_files:
             self.last_saved_image = None
+            self.last_saved_image_path = None
             return
         # Sort files by date in filename (descending, using real date)
         def extract_date(f):
@@ -613,13 +615,16 @@ class StockChartMonitor:
             img = cv2.imread(most_recent)
             if img is not None:
                 self.last_saved_image = img
+                self.last_saved_image_path = most_recent
                 print(f"📊 Loaded most recent saved chart image: {most_recent}")
             else:
                 print(f"⚠️ Failed to load image: {most_recent}")
                 self.last_saved_image = None
+                self.last_saved_image_path = None
         except Exception as e:
             print(f"⚠️ Error loading most recent image: {e}")
             self.last_saved_image = None
+            self.last_saved_image_path = None
 
     def download_chart_image(self):
         """Download the chart image from the web"""
@@ -632,7 +637,7 @@ class StockChartMonitor:
     def save_chart_image(self, image):
         """Save the chart image to a file with timestamp"""
         if image is None:
-            return False
+            return None
             
         # Make sure the downloaded_charts directory exists
         charts_dir = "downloaded_charts"
@@ -657,10 +662,10 @@ class StockChartMonitor:
             print(f"💾 Chart image saved as: {filepath}")
             # Log that a new image was saved
             self.notification_mgr.log_transition(f"Image saved as: {filepath}", "new_image_saved", send_email=False)
-            return True
+            return filepath
         except Exception as e:
             print(f"❌ Error saving chart image: {e}")
-            return False
+            return None
     
     def load_todays_image(self):
         """Check if today's image already exists and load it"""
@@ -683,10 +688,12 @@ class StockChartMonitor:
                 image = cv2.imread(filename)
                 print(f"📊 Loaded existing chart image from today: {filename}")
                 self.last_saved_image = image
+                self.last_saved_image_path = filepath
                 return True
             except Exception as e:
                 print(f"⚠️ Error loading existing chart image: {e}")
                 self.last_saved_image = None
+                self.last_saved_image_path = None
                 return False
         
         return False
@@ -1155,13 +1162,20 @@ class StockChartMonitor:
                         
                         # Check if the image is different from the previously saved one
                         # Log that we're comparing the downloaded image with the existing one
-                        self.notification_mgr.log_transition("Comparing newly downloaded image with existing image", "image_comparison", send_email=False)
+                        existing_image_info = f"Comparing newly downloaded image with existing image"
+                        if self.last_saved_image_path:
+                            # Extract just the filename from the path
+                            existing_filename = os.path.basename(self.last_saved_image_path)
+                            existing_image_info += f" ({existing_filename})"
+                        self.notification_mgr.log_transition(existing_image_info, "image_comparison", send_email=False)
                         if self.image_processor.images_are_different(full_image_opencv, self.last_saved_image):
                             print("💾 New chart image detected - saving...")
                             self.notification_mgr.log_transition("New image detected", "image_comparison", send_email=False)
-                            self.save_chart_image(full_image)
+                            filepath = self.save_chart_image(full_image)
                             # Update the last saved image
                             self.last_saved_image = full_image_opencv
+                            if filepath:
+                                self.last_saved_image_path = filepath
                             
                             # Only analyze the image if it's new
                             # Extract middle section
