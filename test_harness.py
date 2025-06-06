@@ -180,6 +180,12 @@ class TestHarness:
             # Don't actually send emails during testing
             if send_email and not silent:
                 print(f"📧 Would send email notification: {message}")
+                
+                # Log the mock email notification in the test log file
+                email_log_message = f"Email notification would be sent (TEST MODE)"
+                clean_email_log = re.sub(r'[^\x00-\x7F]+', '', email_log_message)
+                with open(log_file, 'a') as f:
+                    f.write(f"[{timestamp}] EMAIL SENT: {clean_email_log} - {crossing_type}\n")
         
         # Replace the notification manager's log_transition method temporarily
         self.notification_mgr.log_transition = mock_log_transition
@@ -347,10 +353,31 @@ class TestHarness:
                 if not ignore_missing:
                     return False
             
+            # Check if any email logging entries were added to the log file
+            email_log_entries = self._check_email_log_entries()
+            if email_log_entries:
+                print(f"📧 Found {len(email_log_entries)} email log entries for this step:")
+                for entry in email_log_entries:
+                    print(f"  - {entry}")
+            
             print(f"--- Completed test step {i+1}/{len(image_config)} ---")
         
         print("\n✅ Test sequence completed successfully")
         return True
+    
+    def _check_email_log_entries(self):
+        """Check if any email logging entries were added to the log file"""
+        email_entries = []
+        try:
+            with open(self.notification_mgr.log_file, 'r') as f:
+                lines = f.readlines()
+                for line in lines:
+                    if "EMAIL SENT:" in line or "EMAIL ERROR:" in line:
+                        email_entries.append(line.strip())
+        except Exception as e:
+            print(f"⚠️ Error checking email log entries: {e}")
+        
+        return email_entries
 
 
 def parse_args():
@@ -412,19 +439,63 @@ def run_preset_test(symbol="$NYSI", debug=False):
     """Run a preset test using the existing stockcharts_NYSI_*.png files"""
     harness = TestHarness(symbol, debug)
     
-    # Define the test sequence using the existing files
-    # This recreates the sequence from June 3 to June 5, 2025
+    # Define the test sequence using the existing files in the downloaded_charts directory
     charts_dir = "downloaded_charts"
     
-    # Check if we need to use the root directory instead
-    if not os.path.exists(os.path.join(charts_dir, "stockcharts_NYSI_2025-06-03.png")):
-        charts_dir = "."
+    # Make sure the downloaded_charts directory exists
+    if not os.path.exists(charts_dir):
+        os.makedirs(charts_dir)
+        print(f"Created directory: {charts_dir}")
     
-    test_sequence = [
-        {"path": os.path.join(charts_dir, "stockcharts_NYSI_2025-06-03.png"), "date": "2025-06-03"},
-        {"path": os.path.join(charts_dir, "stockcharts_NYSI_2025-06-04.png"), "date": "2025-06-04"},
-        {"path": os.path.join(charts_dir, "stockcharts_NYSI_2025-06-05.png"), "date": "2025-06-05"}
-    ]
+    # Find all matching chart files in the downloaded_charts directory
+    chart_files = []
+    for file in os.listdir(charts_dir):
+        if file.startswith(f"stockcharts_{symbol.replace('$', '')}_") and file.endswith(".png"):
+            chart_files.append(file)
+    
+    # Sort files by date
+    chart_files.sort()
+    
+    if not chart_files:
+        # If no files found in downloaded_charts, check if files exist in the root directory
+        root_chart_files = []
+        for file in os.listdir("."):
+            if file.startswith(f"stockcharts_{symbol.replace('$', '')}_") and file.endswith(".png"):
+                root_chart_files.append(file)
+        
+        if root_chart_files:
+            # Move files from root to downloaded_charts
+            for file in root_chart_files:
+                src = os.path.join(".", file)
+                dst = os.path.join(charts_dir, file)
+                try:
+                    os.rename(src, dst)
+                    print(f"Moved {file} to {charts_dir}/")
+                    chart_files.append(file)
+                except Exception as e:
+                    print(f"Error moving file {file}: {e}")
+    
+    # Build test sequence from available files
+    test_sequence = []
+    
+    if chart_files:
+        for file in chart_files:
+            # Extract the date from the filename
+            date_part = file.split('_')[-1].split('.')[0]
+            test_sequence.append({
+                "path": os.path.join(charts_dir, file),
+                "date": date_part
+            })
+        print(f"Found {len(chart_files)} chart files in {charts_dir}/")
+    else:
+        # Fallback to hardcoded sequence if no files are found
+        test_sequence = [
+            {"path": os.path.join(charts_dir, "stockcharts_NYSI_2025-06-03.png"), "date": "2025-06-03"},
+            {"path": os.path.join(charts_dir, "stockcharts_NYSI_2025-06-04.png"), "date": "2025-06-04"},
+            {"path": os.path.join(charts_dir, "stockcharts_NYSI_2025-06-05.png"), "date": "2025-06-05"},
+            {"path": os.path.join(charts_dir, "stockcharts_NYSI_2025-06-06.png"), "date": "2025-06-06"}
+        ]
+        print(f"Warning: No chart files found in {charts_dir}/, using hardcoded test sequence")
     
     # Clear the test log file before starting
     log_file = f"test_{symbol.replace('$', '')}_changes.txt"
@@ -483,6 +554,7 @@ def main():
         print("  1. Test line crossing detection using existing image files")
         print("  2. Simulate monitoring over multiple days without waiting for real time to pass")
         print("  3. Verify that the fix for red-to-black transition detection works correctly")
+        print("  4. Test email notification logging functionality")
 
 
 if __name__ == "__main__":

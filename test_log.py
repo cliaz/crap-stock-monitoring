@@ -13,5 +13,5 @@ monitor.log_transition("Current line color: red", "black_to_red_color", send_ema
 
 # Print the log file content
 print("\nLog file content:")
-with open(monitor.LOG_FILE, "r") as f:
+with open(monitor.notification_mgr.log_file, "r") as f:
     print(f.read())
