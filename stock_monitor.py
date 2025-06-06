@@ -350,7 +350,7 @@ class NotificationManager:
     def __init__(self, symbol):
         self.symbol = symbol
         # Generate log file name based on symbol (without $ character)
-        self.log_file = f"{symbol.replace('$', '')}_changes.txt"
+        self.log_file = f"logs/{symbol.replace('$', '')}_changes.log"
     
     def log_transition(self, message, crossing_type, send_email=True, silent=True):
         """
@@ -967,9 +967,6 @@ class StockChartMonitor:
                              MONITORING_END_HOUR:MONITORING_END_MINUTE in the TIMEZONE timezone
                              If False, will monitor continuously
         """
-        # Only print a single clear startup message
-        print(f"Checking every {check_interval} seconds")
-        
         # Log that monitoring has started
         start_message = f"Monitoring started for {self.symbol}"
         self.notification_mgr.log_transition(start_message, "monitoring_started", send_email=False)
@@ -1285,7 +1282,7 @@ def main():
         print("    sender_password_password = \"your-app-password\"")
         print("    recipients = [\"recipient1@example.com\", \"recipient2@example.com\"]")
         print("\nLogging:")
-        print("  All transitions and current colors will be logged to a text file (SYMBOL_changes.txt) with timestamps")
+        print("  All transitions and current colors will be logged to a text file (logs/SYMBOL_changes.log) with timestamps")
         print("  Color transitions trigger email notifications, current color updates don't")
 
 
