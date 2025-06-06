@@ -571,7 +571,44 @@ class StockChartMonitor:
         self.image_processor = ImageProcessor()
         self.notification_mgr = NotificationManager(symbol)
         self.last_saved_image = None  # Store the last saved image for comparison
-        
+        self._load_most_recent_saved_image()  # Load the most recent image at startup
+    
+    def _load_most_recent_saved_image(self):
+        """Load the most recent chart image from downloaded_charts and set self.last_saved_image (OpenCV format)"""
+        import glob
+        import cv2
+        import numpy as np
+        from datetime import datetime
+        charts_dir = "downloaded_charts"
+        pattern = os.path.join(charts_dir, f"stockcharts_{self.symbol.replace('$', '')}_*.png")
+        image_files = glob.glob(pattern)
+        if not image_files:
+            self.last_saved_image = None
+            return
+        # Sort files by date in filename (descending, using real date)
+        def extract_date(f):
+            import re
+            m = re.search(r"_(\d{4}-\d{2}-\d{2})\.png$", f)  # <-- FIX: use raw string and single backslash
+            if m:
+                try:
+                    return datetime.strptime(m.group(1), "%Y-%m-%d")
+                except Exception:
+                    return datetime.min
+            return datetime.min
+        image_files.sort(key=extract_date, reverse=True)
+        most_recent = image_files[0]
+        try:
+            img = cv2.imread(most_recent)
+            if img is not None:
+                self.last_saved_image = img
+                print(f"📊 Loaded most recent saved chart image: {most_recent}")
+            else:
+                print(f"⚠️ Failed to load image: {most_recent}")
+                self.last_saved_image = None
+        except Exception as e:
+            print(f"⚠️ Error loading most recent image: {e}")
+            self.last_saved_image = None
+
     def download_chart_image(self):
         """Download the chart image from the web"""
         return self.web_interaction.download_chart_image()
