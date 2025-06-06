@@ -973,7 +973,18 @@ class StockChartMonitor:
         # Log that monitoring has started
         start_message = f"Monitoring started for {self.symbol}"
         self.notification_mgr.log_transition(start_message, "monitoring_started", send_email=False)
-        
+
+        # Check for a recent saved chart in downloaded_charts and log it
+        from datetime import datetime
+        charts_dir = "downloaded_charts"
+        clean_symbol = self.symbol.replace('$', '')
+        date_str = datetime.now().strftime('%Y-%m-%d')
+        filename = f"stockcharts_{clean_symbol}_{date_str}.png"
+        filepath = os.path.join(charts_dir, filename)
+        if os.path.exists(filepath):
+            log_msg = f"Recent saved chart detected: {filename}"
+            self.notification_mgr.log_transition(log_msg, "recent_saved_chart", send_email=False)
+
         # Check if log file exists and show the most recent color
         log_file = self.notification_mgr.log_file
         if os.path.exists(log_file):
