@@ -623,7 +623,11 @@ class StockChartMonitor:
 
     def download_chart_image(self):
         """Download the chart image from the web"""
-        return self.web_interaction.download_chart_image()
+        image = self.web_interaction.download_chart_image()
+        if image is not None:
+            # Log successful image download
+            self.notification_mgr.log_transition("Image successfully downloaded", "image_download_success", send_email=False)
+        return image
     
     def save_chart_image(self, image):
         """Save the chart image to a file with timestamp"""
@@ -651,6 +655,8 @@ class StockChartMonitor:
             # Save the image
             image.save(filepath)
             print(f"💾 Chart image saved as: {filepath}")
+            # Log that a new image was saved
+            self.notification_mgr.log_transition(f"Image saved as: {filepath}", "new_image_saved", send_email=False)
             return True
         except Exception as e:
             print(f"❌ Error saving chart image: {e}")
@@ -1148,8 +1154,11 @@ class StockChartMonitor:
                         full_image_opencv = cv2.cvtColor(full_image_opencv_rgb, cv2.COLOR_RGB2BGR)
                         
                         # Check if the image is different from the previously saved one
+                        # Log that we're comparing the downloaded image with the existing one
+                        self.notification_mgr.log_transition("Comparing newly downloaded image with existing image", "image_comparison", send_email=False)
                         if self.image_processor.images_are_different(full_image_opencv, self.last_saved_image):
                             print("💾 New chart image detected - saving...")
+                            self.notification_mgr.log_transition("New image detected", "image_comparison", send_email=False)
                             self.save_chart_image(full_image)
                             # Update the last saved image
                             self.last_saved_image = full_image_opencv
