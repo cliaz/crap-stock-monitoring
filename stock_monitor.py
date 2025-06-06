@@ -437,9 +437,25 @@ class NotificationManager:
                 # Send email
                 server.send_message(msg)
                 server.quit()
-                print(f"📧 Email notification sent to {', '.join(recipients)}")
+                
+                # Log the email notification
+                email_log_message = f"Email notification sent to {', '.join(recipients)}"
+                print(f"📧 {email_log_message}")
+                
+                # Add an entry to the log file for the email
+                timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                clean_email_log = re.sub(r'[^\x00-\x7F]+', '', email_log_message)
+                with open(self.log_file, 'a') as f:
+                    f.write(f"[{timestamp}] EMAIL SENT: {clean_email_log}\n")
             except Exception as e:
-                print(f"❌ Failed to send email notification: {e}")
+                error_message = f"Failed to send email notification: {e}"
+                print(f"❌ {error_message}")
+                
+                # Log the email failure
+                timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                clean_error = re.sub(r'[^\x00-\x7F]+', '', error_message)
+                with open(self.log_file, 'a') as f:
+                    f.write(f"[{timestamp}] EMAIL ERROR: {clean_error}\n")
                 
         except ImportError as e:
             print(f"⚠️ Error importing email configuration: {e}")
@@ -540,6 +556,15 @@ class NotificationManager:
 class StockChartMonitor:
     """Main class that integrates all components for stock chart monitoring"""
     
+    # Default timezone for monitoring
+    TIMEZONE = 'Australia/Sydney'
+    
+    # Default monitoring window times (AEST)
+    MONITORING_START_HOUR = 9
+    MONITORING_START_MINUTE = 30
+    MONITORING_END_HOUR = 10
+    MONITORING_END_MINUTE = 30
+    
     def __init__(self, symbol="$NYSI"):
         self.symbol = symbol
         self.web_interaction = ChartWebInteraction(symbol)
@@ -556,15 +581,27 @@ class StockChartMonitor:
         if image is None:
             return False
             
+        # Make sure the downloaded_charts directory exists
+        charts_dir = "downloaded_charts"
+        if not os.path.exists(charts_dir):
+            try:
+                os.makedirs(charts_dir)
+                print(f"Created directory: {charts_dir}")
+            except Exception as e:
+                print(f"❌ Error creating directory {charts_dir}: {e}")
+                # Fall back to current directory if we can't create the folder
+                charts_dir = "."
+            
         # Generate a filename with date
         clean_symbol = self.symbol.replace('$', '')
         date_str = datetime.now().strftime('%Y-%m-%d')
         filename = f"stockcharts_{clean_symbol}_{date_str}.png"
+        filepath = os.path.join(charts_dir, filename)
         
         try:
             # Save the image
-            image.save(filename)
-            print(f"💾 Chart image saved as: {filename}")
+            image.save(filepath)
+            print(f"💾 Chart image saved as: {filepath}")
             return True
         except Exception as e:
             print(f"❌ Error saving chart image: {e}")
@@ -576,7 +613,16 @@ class StockChartMonitor:
         date_str = datetime.now().strftime('%Y-%m-%d')
         filename = f"stockcharts_{clean_symbol}_{date_str}.png"
         
-        if os.path.exists(filename):
+        # Check in downloaded_charts directory first
+        charts_dir = "downloaded_charts"
+        filepath = os.path.join(charts_dir, filename)
+        
+        if not os.path.exists(filepath):
+            # If not in downloaded_charts, check root directory
+            if os.path.exists(filename):
+                filepath = filename
+            else:
+                return False
             try:
                 # Load the image
                 image = cv2.imread(filename)
@@ -880,6 +926,8 @@ class StockChartMonitor:
         Parameters:
         - check_interval: Time between checks in seconds (default: 60)
         - monitoring_window: Whether to only monitor during specific hours (default: True)
+                             If True, will monitor between MONITORING_START_HOUR:MONITORING_START_MINUTE and 
+                             MONITORING_END_HOUR:MONITORING_END_MINUTE in the TIMEZONE timezone
                              If False, will monitor continuously
         """
         # Only print a single clear startup message
@@ -919,23 +967,30 @@ class StockChartMonitor:
         else:
             print(f"📊 No existing log file found. Will create {log_file} when first transition is detected")
         
-        if monitoring_window:
-            print(f"Will check between 9:30 AM and 10:00 AM AEST only")
-            print("Outside the monitoring window: No output will be shown until the window starts")
-        else:
-            print("Monitoring continuously (no time window restrictions)")
-            
-        print("Press Ctrl+C to stop monitoring")
-        
         try:
-            from datetime import datetime, time as dt_time
+            # Import time separately to avoid naming conflict with datetime module
+            from datetime import time as dt_time
             
-            # Set up timezone
-            aest_timezone = pytz.timezone('Australia/Sydney')
+            # Set up timezone using class constant
+            aest_timezone = pytz.timezone(self.TIMEZONE)
             
-            # Define time window for monitoring (9:30 AM to 10:00 AM AEST)
-            start_time = dt_time(9, 30)  # 9:30 AM
-            end_time = dt_time(10, 0)    # 10:00 AM
+            # Get timezone abbreviation for display
+            timezone_abbr = aest_timezone.localize(datetime.now()).strftime('%Z')
+            
+            if monitoring_window:
+                print(f"Will check between {self.MONITORING_START_HOUR}:{self.MONITORING_START_MINUTE:02d} AM and {self.MONITORING_END_HOUR}:{self.MONITORING_END_MINUTE:02d} AM {timezone_abbr} only")
+                print("Outside the monitoring window: No output will be shown until the window starts")
+            else:
+                print("Monitoring continuously (no time window restrictions)")
+                
+            print("Press Ctrl+C to stop monitoring")
+            
+            # Set up timezone using class constant
+            aest_timezone = pytz.timezone(self.TIMEZONE)
+            
+            # Define time window for monitoring using class constants
+            start_time = dt_time(self.MONITORING_START_HOUR, self.MONITORING_START_MINUTE)
+            end_time = dt_time(self.MONITORING_END_HOUR, self.MONITORING_END_MINUTE)
             
             # Track if we were in the monitoring window in the previous iteration
             was_in_window = False
@@ -1115,8 +1170,10 @@ def parse_args():
     monitor_parser.add_argument("--symbol", default="$NYSI", help="Stock symbol to monitor (default: $NYSI)")
     monitor_parser.add_argument("--interval", type=int, default=30,
                           help="Interval between checks in seconds (default: 30)")
+    # Use timezone abbreviation in the help text
+    timezone_abbr = pytz.timezone(StockChartMonitor.TIMEZONE).localize(datetime.now()).strftime('%Z')
     monitor_parser.add_argument("--continuous", action="store_true",
-                          help="Run continuously regardless of time (default: only checks during 9:30-10:00 AM AEST)")
+                          help=f"Run continuously regardless of time (default: only checks during {StockChartMonitor.MONITORING_START_HOUR}:{StockChartMonitor.MONITORING_START_MINUTE:02d}-{StockChartMonitor.MONITORING_END_HOUR}:{StockChartMonitor.MONITORING_END_MINUTE:02d} AM {timezone_abbr})")
     
     return parser.parse_args()
 
@@ -1170,7 +1227,8 @@ def main():
         print("  python stock_monitor.py monitor --interval 60")
         print("  python stock_monitor.py monitor --interval 60 --continuous")
         print("\nMonitoring Modes:")
-        print("  Default mode: Only checks during 9:30-10:00 AM AEST (Australian Eastern Standard Time)")
+        timezone_abbr = pytz.timezone(StockChartMonitor.TIMEZONE).localize(datetime.now()).strftime('%Z')
+        print(f"  Default mode: Only checks during {StockChartMonitor.MONITORING_START_HOUR}:{StockChartMonitor.MONITORING_START_MINUTE:02d}-{StockChartMonitor.MONITORING_END_HOUR}:{StockChartMonitor.MONITORING_END_MINUTE:02d} AM {timezone_abbr} ({StockChartMonitor.TIMEZONE})")
         print("  Continuous mode: Checks 24/7 regardless of time")
         
         print("\nEmail Notifications:")
