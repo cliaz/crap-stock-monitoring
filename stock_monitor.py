@@ -1178,6 +1178,7 @@ class StockChartMonitor:
                             # Extract just the filename from the path
                             existing_filename = os.path.basename(self.last_saved_image_path)
                             existing_image_info += f" ({existing_filename})"
+                        print(f"📊 {existing_image_info}")
                         self.notification_mgr.log_transition(existing_image_info, "image_comparison", send_email=False)
                         if self.image_processor.images_are_different(full_image_opencv, self.last_saved_image):
                             print("💾 New chart image detected - saving...")
