@@ -1,0 +1,16 @@
+services:
+  crap-stock-monitor:
+    image: klausjones/crap-stock-monitoring:latest 
+    container_name: crap-stock-monitor
+    restart: unless-stopped
+    volumes:
+      - /dockers/crap-stock-monitoring/logs:/app/logs
+      - /dockers/crap-stock-monitoring/downloaded_charts:/app/downloaded_charts
+      - /dockers/crap-stock-monitoring/email_details.py:/app/email_details.py
+    environment:
+      - TZ=Australia/Sydney
+  
+    # The default command is already set in the Dockerfile, which is:
+    # command: ["python", "monitor.py", "--interval", "60"]
+    # Override command if needed
+    #command: ["monitor", "--interval", "10", "--continuous"]
