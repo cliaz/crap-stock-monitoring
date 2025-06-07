@@ -351,6 +351,13 @@ class NotificationManager:
         self.symbol = symbol
         # Generate log file name based on symbol (without $ character)
         self.log_file = f"logs/{symbol.replace('$', '')}_changes.log"
+
+        # Check for email configuration at startup
+        if not os.path.exists("email_details.py"):
+            error_msg = "Email notifications disabled: email_details.py not found. Create it from email_details.template.py"
+            print(f"⚠️ {error_msg}")
+            # Log this message to the log file
+            self.log_transition(error_msg, "email_config_missing", send_email=False)
     
     def log_transition(self, message, crossing_type, send_email=True, silent=True):
         """
@@ -398,6 +405,10 @@ class NotificationManager:
         """
         Send email notification about a transition
         """
+        # Don't check for email_details.py here since we already check in __init__
+        if not os.path.exists("email_details.py"):
+            return
+
         # Try to import email details from email_details.py
         try:
             # Import variables directly from email_details.py
