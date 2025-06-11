@@ -1228,6 +1228,17 @@ class StockChartMonitor:
                             if current_crossing == "no_crossing" and manual_color_crossing != "no_crossing":
                                 effective_crossing = manual_color_crossing
                             
+                            # Verify the crossing makes sense with the last known color
+                            # If the line was black before and is still black, don't report a red-to-black crossing
+                            if effective_crossing == "red_to_black" and last_color == "black" and rightmost_color == "black":
+                                print(f"🔍 Ignoring red-to-black transition because line was already black in previous check")
+                                effective_crossing = "no_crossing"
+                            
+                            # Similarly for red-to-red false transitions
+                            if effective_crossing == "black_to_red" and last_color == "red" and rightmost_color == "red":
+                                print(f"🔍 Ignoring black-to-red transition because line was already red in previous check")
+                                effective_crossing = "no_crossing"
+                            
                             # Check if we should log this transition based on log file history
                             if effective_crossing != "no_crossing" and self.notification_mgr.should_log_transition(effective_crossing):
                                 message = f"⚠️ Line crossing detected: {effective_crossing}"
