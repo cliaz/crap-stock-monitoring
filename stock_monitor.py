@@ -992,7 +992,7 @@ class StockChartMonitor:
             self.image_processor.save_debug_image(box_image, "analysis_region.png", debug)
             print("💾 Analysis region visualization saved as: analysis_region.png")
     
-    def monitor_line_crossings(self, check_interval=60, monitoring_window=True):
+    def monitor_line_crossings(self, check_interval=60, monitoring_window=True, custom_window=None):
         """
         Monitor the chart for line crossings
         
@@ -1002,6 +1002,8 @@ class StockChartMonitor:
                              If True, will monitor between MONITORING_START_HOUR:MONITORING_START_MINUTE and 
                              MONITORING_END_HOUR:MONITORING_END_MINUTE in the TIMEZONE timezone
                              If False, will monitor continuously
+        - custom_window: Dictionary with custom start and end times (keys: start_hour, start_minute, end_hour, end_minute)
+                         If provided, overrides the default window times
         """
         # Gather information for the comprehensive log entry
         from datetime import datetime, time as dt_time
@@ -1051,6 +1053,19 @@ class StockChartMonitor:
         aest_timezone = pytz.timezone(self.TIMEZONE)
         timezone_abbr = aest_timezone.localize(datetime.now()).strftime('%Z')
         
+        # Set up monitoring window times
+        start_hour = self.MONITORING_START_HOUR
+        start_minute = self.MONITORING_START_MINUTE
+        end_hour = self.MONITORING_END_HOUR
+        end_minute = self.MONITORING_END_MINUTE
+        
+        # Override with custom window if provided
+        if custom_window:
+            start_hour = custom_window['start_hour']
+            start_minute = custom_window['start_minute']
+            end_hour = custom_window['end_hour']
+            end_minute = custom_window['end_minute']
+        
         # Build the comprehensive start message
         start_message = f"Monitoring started for {self.symbol} with {check_interval} second interval"
         
@@ -1061,7 +1076,7 @@ class StockChartMonitor:
             start_message += f"\nMost recent detected color: {last_color.upper()} (detected on {last_color_date})"
         
         if monitoring_window:
-            start_message += f"\nMonitoring window: {self.MONITORING_START_HOUR}:{self.MONITORING_START_MINUTE:02d} AM - {self.MONITORING_END_HOUR}:{self.MONITORING_END_MINUTE:02d} AM {timezone_abbr} ({self.TIMEZONE})"
+            start_message += f"\nMonitoring window: {start_hour}:{start_minute:02d} - {end_hour}:{end_minute:02d} {timezone_abbr} ({self.TIMEZONE})"
         else:
             start_message += "\nMonitoring continuously (24/7)"
             
@@ -1115,8 +1130,21 @@ class StockChartMonitor:
             # Get timezone abbreviation for display
             timezone_abbr = aest_timezone.localize(datetime.now()).strftime('%Z')
             
+            # Set up monitoring window times
+            start_hour = self.MONITORING_START_HOUR
+            start_minute = self.MONITORING_START_MINUTE
+            end_hour = self.MONITORING_END_HOUR
+            end_minute = self.MONITORING_END_MINUTE
+            
+            # Override with custom window if provided
+            if custom_window:
+                start_hour = custom_window['start_hour']
+                start_minute = custom_window['start_minute']
+                end_hour = custom_window['end_hour']
+                end_minute = custom_window['end_minute']
+            
             if monitoring_window:
-                print(f"Will check between {self.MONITORING_START_HOUR}:{self.MONITORING_START_MINUTE:02d} AM and {self.MONITORING_END_HOUR}:{self.MONITORING_END_MINUTE:02d} AM {timezone_abbr} only")
+                print(f"Will check between {start_hour}:{start_minute:02d} and {end_hour}:{end_minute:02d} {timezone_abbr} only")
                 print("Outside the monitoring window: No output will be shown until the window starts")
             else:
                 print("Monitoring continuously (no time window restrictions)")
@@ -1126,9 +1154,9 @@ class StockChartMonitor:
             # Set up timezone using class constant
             aest_timezone = pytz.timezone(self.TIMEZONE)
             
-            # Define time window for monitoring using class constants
-            start_time = dt_time(self.MONITORING_START_HOUR, self.MONITORING_START_MINUTE)
-            end_time = dt_time(self.MONITORING_END_HOUR, self.MONITORING_END_MINUTE)
+            # Define time window for monitoring using provided or default values
+            start_time = dt_time(start_hour, start_minute)
+            end_time = dt_time(end_hour, end_minute)
             
             # Track if we were in the monitoring window in the previous iteration
             was_in_window = False
@@ -1258,6 +1286,8 @@ class StockChartMonitor:
                                         self.notification_mgr.log_transition(f"Current line color: {rightmost_color}", f"{effective_crossing}_unchanged", send_email=False)
                                 else:
                                     print(f"📊 No line crossing detected, current color: {rightmost_color}")
+                                    # Log explicitly that no crossing was detected
+                                    self.notification_mgr.log_transition(f"No line crossing detected", "no_crossing_detected", send_email=False)
                                     # Log the rightmost column color without sending an email
                                     self.notification_mgr.log_transition(f"Current line color: {rightmost_color}", "no_crossing", send_email=False)
                         else:
@@ -1334,6 +1364,8 @@ def parse_args():
     timezone_abbr = pytz.timezone(StockChartMonitor.TIMEZONE).localize(datetime.now()).strftime('%Z')
     monitor_parser.add_argument("--continuous", action="store_true",
                           help=f"Run continuously regardless of time (default: only checks during {StockChartMonitor.MONITORING_START_HOUR}:{StockChartMonitor.MONITORING_START_MINUTE:02d}-{StockChartMonitor.MONITORING_END_HOUR}:{StockChartMonitor.MONITORING_END_MINUTE:02d} AM {timezone_abbr})")
+    monitor_parser.add_argument("--window", type=str, metavar="START-END",
+                          help="Specify monitoring window time range (format: HH:MM-HH:MM, e.g., 09:30-10:30)")
     
     return parser.parse_args()
 
@@ -1371,14 +1403,47 @@ def main():
             print("Running in continuous monitoring mode (no time window restrictions)")
         
         monitor = StockChartMonitor(args.symbol)
-        monitor.monitor_line_crossings(check_interval=args.interval, monitoring_window=not args.continuous)
+        
+        # Parse the window time if provided
+        custom_window = None
+        if args.window and not args.continuous:
+            try:
+                # Format should be HH:MM-HH:MM
+                start_time_str, end_time_str = args.window.split('-')
+                start_hour, start_minute = map(int, start_time_str.split(':'))
+                end_hour, end_minute = map(int, end_time_str.split(':'))
+                
+                # Validate time values
+                if not (0 <= start_hour <= 23 and 0 <= start_minute <= 59):
+                    raise ValueError("Start time has invalid hour or minute")
+                if not (0 <= end_hour <= 23 and 0 <= end_minute <= 59):
+                    raise ValueError("End time has invalid hour or minute")
+                
+                custom_window = {
+                    'start_hour': start_hour,
+                    'start_minute': start_minute,
+                    'end_hour': end_hour,
+                    'end_minute': end_minute
+                }
+                
+                print(f"Using custom monitoring window: {start_hour:02d}:{start_minute:02d}-{end_hour:02d}:{end_minute:02d}")
+            except Exception as e:
+                print(f"⚠️ Error parsing window time: {e}")
+                print("Using default monitoring window instead")
+                custom_window = None
+        
+        monitor.monitor_line_crossings(
+            check_interval=args.interval, 
+            monitoring_window=not args.continuous,
+            custom_window=custom_window
+        )
     
     else:
         # If no command is specified, show usage
         print("Stock Chart Color Monitor")
         print("Usage:")
         print("  python stock_monitor.py test [--symbol SYMBOL] [--x-region START_X END_X] [--y-region START_Y END_Y] [--no-debug]")
-        print("  python stock_monitor.py monitor [--symbol SYMBOL] [--interval SECONDS] [--continuous]")
+        print("  python stock_monitor.py monitor [--symbol SYMBOL] [--interval SECONDS] [--continuous] [--window START-END]")
         print("\nExamples:")
         print("  python stock_monitor.py test")
         print("  python stock_monitor.py test --x-region 600 640")
@@ -1386,10 +1451,12 @@ def main():
         print("  python stock_monitor.py monitor")
         print("  python stock_monitor.py monitor --interval 60")
         print("  python stock_monitor.py monitor --interval 60 --continuous")
+        print("  python stock_monitor.py monitor --window 09:30-10:30")
         print("\nMonitoring Modes:")
         timezone_abbr = pytz.timezone(StockChartMonitor.TIMEZONE).localize(datetime.now()).strftime('%Z')
         print(f"  Default mode: Only checks during {StockChartMonitor.MONITORING_START_HOUR}:{StockChartMonitor.MONITORING_START_MINUTE:02d}-{StockChartMonitor.MONITORING_END_HOUR}:{StockChartMonitor.MONITORING_END_MINUTE:02d} AM {timezone_abbr} ({StockChartMonitor.TIMEZONE})")
         print("  Continuous mode: Checks 24/7 regardless of time")
+        print("  Custom window: Checks during the specified time range (format: HH:MM-HH:MM)")
         
         print("\nEmail Notifications:")
         print("  To enable email notifications, update email_details.py with your credentials:")

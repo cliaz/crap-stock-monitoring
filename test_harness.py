@@ -261,6 +261,8 @@ class TestHarness:
                     self.notification_mgr.log_transition(f"Current line color: {rightmost_color}", f"{effective_crossing}_unchanged", send_email=False)
             else:
                 print(f"📊 No line crossing detected, current color: {rightmost_color}")
+                # Log explicitly that no crossing was detected
+                self.notification_mgr.log_transition(f"No line crossing detected", "no_crossing_detected", send_email=False)
                 # Log the rightmost column color without sending an email
                 self.notification_mgr.log_transition(f"Current line color: {rightmost_color}", "no_crossing", send_email=False)
         
