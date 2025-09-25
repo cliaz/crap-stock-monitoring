@@ -1,94 +1,86 @@
-# Stock Chart Monitor
+# Crap Stock Monitor
 
-This application monitors StockCharts.com for color changes in the $NYSI chart line (red/black transitions). It analyzes a specific region of the chart to detect when the line changes from red to black or black to red, logs these transitions, and sends email notifications.
+## Summary
 
-## Requirements
-
-- Python 3.6+
-- Required packages: see requirements.txt
+A Python script that monitors the NYSE McClellan Summation Index (NYSI) and sends email alerts when the trend changes from "Red" (declining) to "Black" (rising) or vice versa. Uses direct API calls to StockCharts for reliable data access.
 
 ## Installation
 
 ```bash
-pip install -r requirements.txt
+pip install requests
+python crap_stock_monitor.py --check  # Test run
 ```
 
-## Running
+## Requirements
 
-### Test mode (single capture)
+**Environment:**
+- Python 3.6+
+- Internet connection
 
-```bash
-python stock_monitor.py test
+**Libraries:**
+- `requests` (for API calls)
+- Built-in: `smtplib`, `email`, `json`, `datetime`, `argparse`
+
+**Configuration:**
+- Requires `email_details.py` for email notifications
+- Creates `NYSI_state.json` to track state between runs
+
+## Details
+
+### Logic Flow
+
+```mermaid
+graph TD
+    A[Start Script] --> B[Load Configuration]
+    B --> C{Validate Email?}
+    C -->|Yes| D[Test SMTP Connection]
+    D --> E{Valid Credentials?}
+    E -->|No| F[Show Warning]
+    E -->|Yes| G[Continue]
+    F --> G
+    C -->|No| G
+    G --> H[Fetch NYSI Data from API]
+    H --> I{Data Retrieved?}
+    I -->|No| J[Log Error & Exit]
+    I -->|Yes| K[Calculate Current Color]
+    K --> L[Load Previous State]
+    L --> M{Color Changed?}
+    M -->|No| N[Log No Change]
+    M -->|Yes| O[Send Email Alert]
+    O --> P[Update State File]
+    N --> Q{Continuous Mode?}
+    P --> Q
+    Q -->|No| R[Exit]
+    Q -->|Yes| S{In Monitoring Window?}
+    S -->|No| T[Wait Until Window]
+    S -->|Yes| U{Data Already Today?}
+    U -->|Yes| V[Wait Until Tomorrow]
+    U -->|No| W[Wait Interval]
+    T --> H
+    V --> H
+    W --> H
+    J --> R
 ```
 
-To analyze a specific region:
+## Usage
 
 ```bash
-python stock_monitor.py test --x-region 600 640
+# Single check and exit
+python crap_stock_monitor.py --check
+
+# Continuous monitoring with custom interval and window
+python crap_stock_monitor.py --interval 60 --window 09:30-16:00
+
+# Validate email credentials only
+python crap_stock_monitor.py --validate-email
 ```
 
-To specify both x and y regions:
+## Configuration
 
-```bash
-python stock_monitor.py test --x-region 600 640 --y-region 200 300
-```
+Create `email_details.py`:
 
-To specify a different symbol:
-*(Note: this will probably break. This whole thing is mad brittle)*
-
-```bash
-python stock_monitor.py test --symbol "$NYMO"
-```
-
-
-
-### Monitor mode
-
-Run with default settings (checks every 30 seconds during 9:30-10:00 AM AEST):
-
-```bash
-python stock_monitor.py monitor
-```
-
-Run with custom interval (60 seconds):
-
-```bash
-python stock_monitor.py monitor --interval 60
-```
-
-Run in continuous mode (24/7 monitoring):
-
-```bash
-python stock_monitor.py monitor --interval 60 --continuous
-```
-
-Monitor a different symbol:
-
-```bash
-python stock_monitor.py monitor --symbol "$NYMO" --interval 60 --continuous
-```
-
-## Email Notifications
-
-To enable email notifications:
-
-1. Copy the template file to the real configuration:
-
-   ```bash
-   cp email_details.template.py email_details.py
-   ```
-
-2. Edit `email_details.py` with your email credentials:
-
-   ```python
-   sender_email = "your.email@gmail.com"
-   sender_password = "your-app-password"  # For Gmail, use an App Password
-   recipients = ["recipient1@example.com", "recipient2@example.com"]
-   ```
-
-## Viewing logs
-
-```bash
-# Access the log file
-cat logs/nysi_changes.log
+```python
+sender_email = "your.email@gmail.com"
+sender_password_password = "your-app-password"  # Gmail app password  
+recipients = ["recipient@example.com"]
 ```
