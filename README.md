@@ -9,7 +9,7 @@ This repository contains two main Python tools for stock market analysis:
 
 ## Crap Stock Monitor
 
-A Python script that monitors the NYSE McClellan Summation Index (NYSI) and sends email alerts when the trend changes from "Red" (declining) to "Black" (rising) or vice versa. Uses direct API calls to StockCharts for reliable data access.
+A Python script that monitors the NYSE McClellan Summation Index (NYSI) and sends email alerts when the trend changes from "Red" (declining) to "Black" (rising) or vice versa. Uses direct API calls to StockCharts for reliable data access. Maintains a rolling history of the last 10 days of trading data for analysis.
 
 ### Installation
 
@@ -46,6 +46,9 @@ python crap_stock_monitor.py --interval 60 --window 09:30-16:00
 
 # Validate email credentials only
 python crap_stock_monitor.py --validate-email
+
+# Display trading history (last 10 days)
+python crap_stock_monitor.py --history
 ```
 
 ### Configuration

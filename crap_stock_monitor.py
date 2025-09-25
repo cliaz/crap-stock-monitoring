@@ -108,32 +108,133 @@ class CrapStockMonitor:
             try:
                 with open(self.state_file, 'r') as f:
                     state = json.load(f)
-                    return state.get('last_color'), state.get('last_date'), state.get('last_value')
+                    
+                    # Handle new format with history
+                    if 'history' in state and state['history']:
+                        # Get the most recent entry
+                        latest = max(state['history'], key=lambda x: x['date'])
+                        return latest['color'], latest['date'], latest['value']
+                    
+                    # Handle old format for backward compatibility
+                    elif 'last_color' in state:
+                        return state.get('last_color'), state.get('last_date'), state.get('last_value')
+                        
             except (json.JSONDecodeError, IOError):
                 pass
         return None, None, None
 
+    # Helper method to clean up history and keep only last 10 days
+    def _clean_history(self, history):
+    
+        from datetime import datetime, timedelta
+        
+        if not history:
+            return []
+            
+        # Sort by date (newest first) and remove duplicates by date
+        seen_dates = set()
+        cleaned = []
+        
+        for entry in sorted(history, key=lambda x: x['date'], reverse=True):
+            if entry['date'] not in seen_dates:
+                seen_dates.add(entry['date'])
+                cleaned.append(entry)
+                
+        # Keep only last 10 entries
+        return cleaned[:10]
+
+    # Build initial history from historical data
+    def _build_initial_history(self, historical_data):
+        """Build initial history from multiple days of historical NYSI data"""
+        if len(historical_data) < 2:
+            return
+            
+        # Process each day starting from the second entry (need pairs to determine color)
+        for i in range(1, len(historical_data)):
+            current_data = historical_data[i]
+            previous_data = historical_data[i-1]
+            
+            date = current_data['date']
+            value = current_data['value']
+            
+            # Determine color based on trend from previous day
+            if value > previous_data['value']:
+                color = "Black"  # Going up
+            else:
+                color = "Red"    # Going down
+                
+            # Save each day to build up history (but don't print each one)
+            self.save_state(color, date, value)
+
     # Save the current state to the state file
     def save_state(self, color, date, value):
+        
+        # Load existing state to preserve history
+        existing_history = []
+        if os.path.exists(self.state_file):
+            try:
+                with open(self.state_file, 'r') as f:
+                    existing_state = json.load(f)
+                    if 'history' in existing_state:
+                        existing_history = existing_state['history']
+                    elif 'last_color' in existing_state:
+                        # Migrate old format to new format
+                        existing_history = [{
+                            'color': existing_state['last_color'],
+                            'date': existing_state['last_date'],
+                            'value': existing_state['last_value']
+                        }]
+            except (json.JSONDecodeError, IOError):
+                existing_history = []
 
+        # Add new entry to history
+        new_entry = {
+            'color': color,
+            'date': date,
+            'value': value,
+            'timestamp': datetime.now().isoformat()
+        }
+        existing_history.append(new_entry)
+        
+        # Clean up history to keep only last 10 days
+        cleaned_history = self._clean_history(existing_history)
+        
+        # Create new state format
         state = {
-            'last_color': color,
+            'history': cleaned_history,
+            'last_color': color,  # Keep for backward compatibility
             'last_date': date,
             'last_value': value,
             'updated': datetime.now().isoformat()
         }
+        
         try:
             with open(self.state_file, 'w') as f:
                 json.dump(state, f, indent=2)
         except IOError as e:
             print(f"WARNING: Could not save state: {e}")
 
+    # Display the trading history
+    def display_history(self):
+        """Display the last 10 days of trading data"""
+        if os.path.exists(self.state_file):
+            try:
+                with open(self.state_file, 'r') as f:
+                    state = json.load(f)
+                    if 'history' in state and state['history']:
+                        print("\nTrading History (Last 10 Days):")
+                        print("-" * 50)
+                        for entry in sorted(state['history'], key=lambda x: x['date']):
+                            print(f"{entry['date']}: {entry['value']} = {entry['color']}")
+                        print("-" * 50)
+                    else:
+                        print("No trading history available")
+            except (json.JSONDecodeError, IOError):
+                print("Could not read trading history")
+
     # Validate email credentials without sending an email
     def validate_email_credentials(self):
-        """
-        Validates email credentials by attempting to authenticate with the SMTP server.
-        Returns True if credentials are valid, False otherwise.
-        """
+    
         if not os.path.exists("email_details.py"):
             print("WARNING: Email validation failed: email_details.py not found")
             return False
@@ -228,11 +329,27 @@ class CrapStockMonitor:
 
         print(f"Checking NYSI status at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
         
-        # Get recent NYSI data
-        nysi_data = self.get_nysi_data()
+        # Check if we have existing state/history
+        has_existing_state = os.path.exists(self.state_file)
+        
+        if not has_existing_state:
+            print("No existing state file found - fetching 11 days of historical data to build history...")
+            # Get historical data to populate initial history. Need history + 1 day to determine the first
+            # color. 11 days of data gives us 10 days of red/black history.
+            nysi_data = self.get_nysi_data(11)
+        else:
+            # Get recent NYSI data for normal operation
+            nysi_data = self.get_nysi_data()
+            
         if not nysi_data:
             print("ERROR: Could not fetch NYSI data")
             return False
+            
+        # If we're initializing history, process all historical data first
+        if not has_existing_state and len(nysi_data) > 1:
+            print(f"Building initial history from {len(nysi_data)} days of data...")
+            self._build_initial_history(nysi_data)
+            print("Initial history built successfully")
             
         # Determine current color
         current_color = self.determine_color(nysi_data)
@@ -245,6 +362,9 @@ class CrapStockMonitor:
         current_value = latest_data['value']
         
         print(f"Current NYSI: {current_value} ({current_date}) = {current_color}")
+        
+        # Display trading history
+        self.display_history()
         
         # Load last known state
         last_color, last_date, last_value = self.load_last_state()
@@ -353,6 +473,19 @@ class CrapStockMonitor:
             
         print("Press Ctrl+C to stop monitoring")
         
+        # Initialize history if no state file exists
+        if not os.path.exists(self.state_file):
+            print("No existing state file found - initializing history...")
+            try:
+                # Perform initial check to build history
+                success = self.check_once()
+                if success:
+                    print("History initialized successfully")
+                else:
+                    print("WARNING: Failed to initialize history")
+            except Exception as e:
+                print(f"WARNING: Error during history initialization: {e}")
+        
         # Track if we were in the monitoring window in the previous iteration
         was_in_window = False
         data_received_today = False
@@ -445,6 +578,7 @@ def main():
     parser.add_argument("--symbol", default="$NYSI", help="Stock symbol to monitor (default: $NYSI)")
     parser.add_argument("--check", action="store_true", help="Check once and exit")
     parser.add_argument("--validate-email", action="store_true", help="Validate email credentials and exit")
+    parser.add_argument("--history", action="store_true", help="Display trading history and exit")
     parser.add_argument("--interval", type=int, default=300, help="Check interval in seconds (default: 300)")
     parser.add_argument("--window", type=str, metavar="START-END", 
                         help="Monitoring window (format: HH:MM-HH:MM, e.g., 09:30-16:00)")
@@ -477,6 +611,12 @@ def main():
             print("ERROR: email_details.py not found")
             print("Crap Stock Monitor stopped")
             exit(1)
+    
+    # Handle history display mode
+    if args.history:
+        monitor.display_history()
+        print("Crap Stock Monitor stopped")
+        exit(0)
     
     # Validate email credentials if email_details.py exists (for normal operation)
     if os.path.exists("email_details.py"):
