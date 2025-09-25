@@ -622,6 +622,15 @@ def main():
     if os.path.exists("email_details.py"):
         if not monitor.validate_email_credentials():
             print("WARNING: Continuing with invalid email credentials. Notifications may fail.")
+        else:
+            # Show who will receive notifications
+            try:
+                import email_details
+                if hasattr(email_details, 'recipients') and email_details.recipients:
+                    recipients_str = ', '.join(email_details.recipients)
+                    print(f"Email notifications will be sent to: {recipients_str}")
+            except Exception as e:
+                print("Email notifications configured (recipients list not accessible)")
     else:
         print("INFO: No email_details.py found. Email notifications will be disabled.")
     
