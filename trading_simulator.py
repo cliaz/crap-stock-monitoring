@@ -15,7 +15,7 @@ import argparse
 
 
 # Default configuration
-DEFAULT_INDICATOR_TICKER = '$NYSI'
+DEFAULT_INDICATOR_TICKER = 'NYSI'
 DEFAULT_STOCK_TICKER = 'GGUS.AX'
 DEFAULT_BUY_SIGNAL = 'Black'        # aka when the NYSI changes to black from red, we buy
 DEFAULT_STOCK_MONTHS = 12
@@ -42,10 +42,10 @@ if args.help:
 Usage: python trading_simulator.py [options]
 
 Options:
-  -i, --indicator      Indicator ticker (default: $NYSI)
+  -i, --indicator      Indicator ticker (default: NYSI)
   -s, --stock          Stock ticker (default: GGUS.AX)
   -b, --buy-signal     Buy signal (default: Black)
-  -m, --months         Duration in months (default: 36)
+  -m, --months         Duration in months (default: 12)
   -p, --price-type     Stock price type (default: Close)
   -o, --output         Output HTML file name
   --csv                Output as CSV file instead of HTML webpage
@@ -109,7 +109,7 @@ elif args.blacklist_start or args.blacklist_end:
 def build_nysi_url(ticker, months):
     years = months // 12
     mn = months % 12
-    return f'https://stockcharts.com/c-sc/sc?s={ticker}&p=D&yr={years}&mn={mn}&dy=0&i=t3757734781c&img=text&inspector=yes'
+    return f'https://stockcharts.com/c-sc/sc?s=${ticker}&p=D&yr={years}&mn={mn}&dy=0&i=t3757734781c&img=text&inspector=yes'
 
 # Helper to build Yahoo Finance period string from months
 def months_to_yf_period(months):
@@ -253,7 +253,7 @@ else:
     new_html = new_html.replace('{{STOCK_PRICE_TYPE}}', STOCK_PRICE_TYPE)
     new_html = new_html.replace('{{STOCK_MONTHS}}', str(STOCK_MONTHS))
     new_html = new_html.replace('{{BUY_SIGNAL}}', BUY_SIGNAL)
-    new_html = new_html.replace('{{INDICATOR_TICKER}}', INDICATOR_TICKER)
+    new_html = new_html.replace('{{INDICATOR_TICKER}}', f"${INDICATOR_TICKER.upper()}")
     
     # Add blacklist information
     if BLACKLIST_START and BLACKLIST_END:
