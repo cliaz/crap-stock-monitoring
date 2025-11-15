@@ -17,9 +17,14 @@ import os
 
 
 class CrapStockMonitor:
-    def __init__(self, symbol="$NYSI"):
+    def __init__(self, symbol="$NYSI", data_dir="/app/data"):
         self.symbol = symbol
-        self.state_file = f"{symbol.replace('$', '')}_state.json"
+        self.data_dir = data_dir
+        
+        # Create data directory if it doesn't exist
+        os.makedirs(self.data_dir, exist_ok=True)
+        
+        self.state_file = os.path.join(self.data_dir, f"{symbol.replace('$', '')}_state.json")
         self.user_agent = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/117.0.0.0 Safari/537.36'
 
     # Fetch recent NYSI data from StockCharts API
@@ -231,6 +236,36 @@ class CrapStockMonitor:
                         print("No trading history available")
             except (json.JSONDecodeError, IOError):
                 print("Could not read trading history")
+
+    # Send a test email
+    def send_test_email(self):
+        if not os.path.exists("email_details.py"):
+            print("ERROR: email_details.py not found")
+            return False
+
+        try:
+            from email_details import sender_email, sender_password_password, recipients
+            
+            if not recipients:
+                recipients = [sender_email]
+            
+            msg = MIMEText(f"Test email from Crap Stock Monitor at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+            msg['Subject'] = 'NYSI Monitor Test'
+            msg['From'] = sender_email
+            msg['To'] = ", ".join(recipients)
+            
+            server = smtplib.SMTP('smtp.gmail.com', 587)
+            server.starttls()
+            server.login(sender_email, sender_password_password)
+            server.send_message(msg)
+            server.quit()
+            
+            print(f"Test email sent to {', '.join(recipients)}")
+            return True
+            
+        except Exception as e:
+            print(f"ERROR: {e}")
+            return False
 
     # Validate email credentials without sending an email
     def validate_email_credentials(self):
@@ -577,6 +612,7 @@ def main():
     parser = argparse.ArgumentParser(description="Crap Stock Monitor")
     parser.add_argument("--symbol", default="$NYSI", help="Stock symbol to monitor (default: $NYSI)")
     parser.add_argument("--check", action="store_true", help="Check once and exit")
+    parser.add_argument("--test-email", action="store_true", help="Send a test email and exit")
     parser.add_argument("--validate-email", action="store_true", help="Validate email credentials and exit")
     parser.add_argument("--history", action="store_true", help="Display trading history and exit")
     parser.add_argument("--interval", type=int, default=300, help="Check interval in seconds (default: 300)")
@@ -600,6 +636,17 @@ def main():
     monitor = CrapStockMonitor(args.symbol)
     
     print("Starting Crap Stock Monitor")
+    
+    # Handle test email mode
+    if args.test_email:
+        if os.path.exists("email_details.py"):
+            success = monitor.send_test_email()
+            print("Crap Stock Monitor stopped")
+            exit(0 if success else 1)
+        else:
+            print("ERROR: email_details.py not found")
+            print("Crap Stock Monitor stopped")
+            exit(1)
     
     # Handle email validation only mode
     if args.validate_email:
