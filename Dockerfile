@@ -18,4 +18,4 @@ ENV TZ=Australia/Sydney
 
 # Run the script in continuous monitoring mode when the container starts
 ENTRYPOINT ["python", "-u", "crap_stock_monitor.py"]
-CMD ["--interval", "60"]
+CMD ["--data-dir", "/app/data", "--interval", "60"]

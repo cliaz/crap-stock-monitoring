@@ -17,9 +17,13 @@ import os
 
 
 class CrapStockMonitor:
-    def __init__(self, symbol="$NYSI", data_dir="/app/data"):
+    def __init__(self, symbol="$NYSI", data_dir=None):
         self.symbol = symbol
-        self.data_dir = data_dir
+        # Use ./data by default if no data_dir specified
+        if data_dir is None:
+            self.data_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
+        else:
+            self.data_dir = data_dir
         
         # Create data directory if it doesn't exist
         os.makedirs(self.data_dir, exist_ok=True)
@@ -618,6 +622,8 @@ def main():
     parser.add_argument("--interval", type=int, default=300, help="Check interval in seconds (default: 300)")
     parser.add_argument("--window", type=str, metavar="START-END", 
                         help="Monitoring window (format: HH:MM-HH:MM, e.g., 09:30-16:00)")
+    parser.add_argument("--data-dir", type=str, default=None, 
+                        help="Directory for data storage (default: ./data)")
     
     args = parser.parse_args()
     
@@ -633,7 +639,7 @@ def main():
             print("ERROR: Invalid window format. Use HH:MM-HH:MM (e.g., 09:30-16:00)")
             return
     
-    monitor = CrapStockMonitor(args.symbol)
+    monitor = CrapStockMonitor(args.symbol, data_dir=args.data_dir)
     
     print("Starting Crap Stock Monitor")
     

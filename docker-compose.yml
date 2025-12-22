@@ -10,4 +10,4 @@ services:
       - /dockers/crap-stock-monitoring/data:/app/data
     environment:
       - TZ=Australia/Sydney
-    command: ["--interval", "120", "--window", "07:30-10:00"]
+    command: ["--data-dir", "/app/data", "--interval", "120", "--window", "07:30-10:00"]
