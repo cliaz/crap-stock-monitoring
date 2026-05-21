@@ -17,7 +17,10 @@ import argparse
 # Default configuration
 DEFAULT_INDICATOR_TICKER = 'NYSI'
 DEFAULT_STOCK_TICKER = 'GGUS.AX'
-DEFAULT_BUY_SIGNAL = 'Black'        # aka when the NYSI changes to black from red, we buy
+# Default strategy: buy whenever the indicator is BUY_SIGNAL ("Black" = rising) and we're flat;
+# sell as soon as it turns the opposite ("Red" = falling). The HTML page has a "transition-only"
+# toggle that restricts entries to Red->Black transitions and skips catch-up buys.
+DEFAULT_BUY_SIGNAL = 'Black'
 DEFAULT_STOCK_MONTHS = 12
 DEFAULT_STOCK_PRICE_TYPE = 'Close'
 
@@ -26,14 +29,14 @@ parser = argparse.ArgumentParser(description='Generate trading simulation webpag
 parser.add_argument('-i', '--indicator', type=str, default=DEFAULT_INDICATOR_TICKER, help='Indicator ticker (default: $NYSI)')
 parser.add_argument('-s', '--stock', type=str, default=DEFAULT_STOCK_TICKER, help='Stock ticker (default: GGUS.AX)')
 parser.add_argument('-b', '--buy-signal', type=str, default=DEFAULT_BUY_SIGNAL, help='Buy signal, aka which colour the NYSI changes to (default: Black)')
-parser.add_argument('-m', '--months', type=int, default=DEFAULT_STOCK_MONTHS, help='Duration in months (default: 36)')
+parser.add_argument('-m', '--months', type=int, default=DEFAULT_STOCK_MONTHS, help=f'Duration in months (default: {DEFAULT_STOCK_MONTHS})')
 parser.add_argument('-p', '--price-type', type=str, default=DEFAULT_STOCK_PRICE_TYPE, help='Stock price type (default: Close)')
 parser.add_argument('-o', '--output', type=str, default=None, help='Output HTML file name')
 parser.add_argument('--csv', action='store_true', help='Output as CSV file instead of HTML webpage')
 parser.add_argument('--blacklist-start', type=str, default=None, help='Start date for blacklist period (YYYY-MM-DD format)')
 parser.add_argument('--blacklist-end', type=str, default=None, help='End date for blacklist period (YYYY-MM-DD format)')
 parser.add_argument('-h', '--help', action='store_true', help='Show help/README and exit')
-args, unknown = parser.parse_known_args()
+args = parser.parse_args()
 
 if args.help:
     help_formatter = argparse.RawDescriptionHelpFormatter(prog='trading_simulator.py')
@@ -46,6 +49,7 @@ Options:
   -s, --stock          Stock ticker (default: GGUS.AX)
   -b, --buy-signal     Buy signal (default: Black)
   -m, --months         Duration in months (default: 12)
+
   -p, --price-type     Stock price type (default: Close)
   -o, --output         Output HTML file name
   --csv                Output as CSV file instead of HTML webpage
@@ -79,6 +83,7 @@ Output:
 INDICATOR_TICKER = args.indicator
 STOCK_TICKER = args.stock
 BUY_SIGNAL = args.buy_signal
+SELL_SIGNAL = 'Red' if BUY_SIGNAL == 'Black' else 'Black'
 STOCK_MONTHS = args.months
 STOCK_PRICE_TYPE = args.price_type
 
@@ -125,7 +130,14 @@ NYSI_URL = build_nysi_url(INDICATOR_TICKER, STOCK_MONTHS)
 
 
 # Get NYSI raw information
-nysi_data = rq.get(NYSI_URL, headers={'user-agent':USER_AGENT}).text
+nysi_response = rq.get(NYSI_URL, headers={'user-agent':USER_AGENT})
+nysi_data = nysi_response.text
+if '<pricedata>' not in nysi_data:
+    print(f"Error: StockCharts response did not contain expected <pricedata> block.")
+    print(f"URL: {NYSI_URL}")
+    print(f"HTTP status: {nysi_response.status_code}")
+    print(f"Response snippet (first 500 chars): {nysi_data[:500]}")
+    exit(1)
 nysi_data = nysi_data.split('<pricedata>')[1].replace('</pricedata>','')
 
 # Process NYSI rows
@@ -150,6 +162,11 @@ stock_yf = yf.Ticker(STOCK_TICKER)
 stock_hist = stock_yf.history(period=months_to_yf_period(STOCK_MONTHS))
 stock_hist = stock_hist.reset_index()
 
+if STOCK_PRICE_TYPE not in stock_hist.columns:
+    print(f"Error: Stock price type '{STOCK_PRICE_TYPE}' not found in Yahoo Finance data for {STOCK_TICKER}.")
+    print(f"Available columns: {list(stock_hist.columns)}")
+    exit(1)
+
 
 # Build a dict of date to selected price type
 stock_price_dict = {}
@@ -168,14 +185,18 @@ df = pd.DataFrame.from_dict(nysi_list)
 # Insert 'Red / Black' column after 'NYSI value'
 def red_black_logic(values):
     result = ['n/a']  # First row has no previous, default to n/a
+    last_known = 'n/a'  # Last directional state (carries through flat patches)
     for i in range(1, len(values)):
         if values[i] > values[i-1]:
+            last_known = 'Black'
             result.append('Black')
         elif values[i] < values[i-1]:
+            last_known = 'Red'
             result.append('Red')
         else:
-            # If NYSI is the same, maintain previous Red/Black value
-            result.append(result[i-1])
+            # NYSI flat — carry forward the last directional state.
+            # Avoids n/a propagating through a flat patch at the start of the series.
+            result.append(last_known)
     return result
 df.insert(df.columns.get_loc('NYSI value') + 1, 'Red / Black', red_black_logic(df['NYSI value'].values))
 
@@ -253,7 +274,8 @@ else:
     new_html = new_html.replace('{{STOCK_PRICE_TYPE}}', STOCK_PRICE_TYPE)
     new_html = new_html.replace('{{STOCK_MONTHS}}', str(STOCK_MONTHS))
     new_html = new_html.replace('{{BUY_SIGNAL}}', BUY_SIGNAL)
-    new_html = new_html.replace('{{INDICATOR_TICKER}}', f"${INDICATOR_TICKER.upper()}")
+    new_html = new_html.replace('{{SELL_SIGNAL}}', SELL_SIGNAL)
+    new_html = new_html.replace('{{INDICATOR_TICKER}}', f"${INDICATOR_TICKER.lstrip('$').upper()}")
     
     # Add blacklist information
     if BLACKLIST_START and BLACKLIST_END:

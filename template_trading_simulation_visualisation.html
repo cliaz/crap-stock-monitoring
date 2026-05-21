@@ -87,7 +87,15 @@
         <div style="text-align:center; margin-bottom:20px;">
             <b>Stock:</b> {{STOCK_TICKER}} &nbsp; | &nbsp; <b>Price Type:</b> {{STOCK_PRICE_TYPE}} &nbsp; | &nbsp; <b>Duration:</b> {{STOCK_MONTHS}} months &nbsp; | &nbsp; <b>Buy Signal:</b> {{INDICATOR_TICKER}} = {{BUY_SIGNAL}}
         </div>
-        
+
+        <div style="text-align:center; margin-bottom:20px; background:rgba(255,255,255,0.1); padding:14px; border-radius:10px;">
+            <label style="cursor:pointer; user-select:none; font-size:1.05em;">
+                <input type="checkbox" id="transitionOnlyCheckbox" style="margin-right:10px; transform:scale(1.2); vertical-align:middle;">
+                <b>Buy only on {{SELL_SIGNAL}} → {{BUY_SIGNAL}} transitions</b>
+                <span style="opacity:0.75; font-size:0.9em; display:block; margin-top:4px;">When on, skips catch-up entries: if you miss the transition day (e.g. holiday) you wait for the next transition. Selling on {{SELL_SIGNAL}} is unaffected — always sells ASAP.</span>
+            </label>
+        </div>
+
         <div class="summary" id="summary"></div>
         
         <div class="chart-container">
@@ -134,7 +142,8 @@
             });
         }
 
-        function simulateTrading() {
+        function simulateTrading(options) {
+            const transitionOnly = (options && options.transitionOnly) || false;
             const data = parseCSV(csvData);
             let portfolio = 10000; // Starting cash
             let shares = 0;
@@ -142,17 +151,23 @@
             let trades = [];
             let portfolioHistory = [];
             let tradeNumber = 0;
+            let lastValidPrice = null;
+            let lastValidDate = null;
 
             // Skip first row since it's n/a
             for (let i = 1; i < data.length; i++) {
                 const row = data[i];
                 const date = row.date;
                 const signal = row['Red / Black'];
+                const prevSignal = data[i-1] ? data[i-1]['Red / Black'] : null;
                 const price = parseFloat(row['Stock Price ({{STOCK_PRICE_TYPE}})']);
                 const isBlacklisted = row['Blacklisted'] === 'True';
 
                 // Skip rows with missing price data
                 if (!price || isNaN(price)) continue;
+
+                lastValidPrice = price;
+                lastValidDate = date;
 
                 // Skip trading if date is blacklisted
                 if (isBlacklisted) {
@@ -166,14 +181,20 @@
                     continue;
                 }
 
-                if (signal === '{{BUY_SIGNAL}}' && position === null) {
+                // Buy logic:
+                //   Default mode: buy any time the signal is BUY_SIGNAL and we're flat (catches up after missed days).
+                //   Transition-only mode: buy only on the SELL_SIGNAL -> BUY_SIGNAL flip; if we miss it, wait for the next flip.
+                const isTransitionToBuy = (prevSignal === '{{SELL_SIGNAL}}' && signal === '{{BUY_SIGNAL}}');
+                const buyTrigger = transitionOnly ? isTransitionToBuy : (signal === '{{BUY_SIGNAL}}');
+
+                if (buyTrigger && position === null) {
                     // Buy signal - enter long position
                     shares = Math.floor(portfolio / price);
                     if (shares > 0) {
                         const cost = shares * price;
                         portfolio -= cost;
                         position = 'long';
-                        
+
                         // Store buy info for the trade
                         trades.push({
                             tradeNumber: ++tradeNumber,
@@ -183,11 +204,11 @@
                             buyValue: cost
                         });
                     }
-                } else if (signal !== '{{BUY_SIGNAL}}' && position === 'long') {
-                    // Sell signal - exit long position
+                } else if (signal === '{{SELL_SIGNAL}}' && position === 'long') {
+                    // Sell signal - exit long position (always sells ASAP on SELL_SIGNAL, regardless of buy mode)
                     const revenue = shares * price;
                     portfolio += revenue;
-                    
+
                     // Complete the trade record
                     const currentTrade = trades[trades.length - 1];
                     currentTrade.sellDate = date;
@@ -195,7 +216,7 @@
                     currentTrade.sellValue = revenue;
                     currentTrade.pnl = revenue - currentTrade.buyValue;
                     currentTrade.portfolioValue = portfolio;
-                    
+
                     position = null;
                     shares = 0;
                 }
@@ -209,127 +230,162 @@
                 });
             }
 
-            return { trades: trades.filter(t => t.sellDate), portfolioHistory, finalValue: portfolioHistory[portfolioHistory.length - 1].value };
+            // If we ended the sim still in a position, mark-to-market close at last available price.
+            // Without this, "Total Return" (which includes share value) silently disagrees with "Total P&L"
+            // (which sums closed trades only).
+            if (position === 'long' && lastValidPrice !== null && trades.length > 0) {
+                const revenue = shares * lastValidPrice;
+                portfolio += revenue;
+                const currentTrade = trades[trades.length - 1];
+                currentTrade.sellDate = lastValidDate + ' (open, MTM)';
+                currentTrade.sellPrice = lastValidPrice;
+                currentTrade.sellValue = revenue;
+                currentTrade.pnl = revenue - currentTrade.buyValue;
+                currentTrade.portfolioValue = portfolio;
+                currentTrade.openPosition = true;
+                position = null;
+                shares = 0;
+            }
+
+            const finalValue = portfolioHistory.length > 0
+                ? portfolioHistory[portfolioHistory.length - 1].value
+                : 10000;
+            return { trades: trades.filter(t => t.sellDate), portfolioHistory, finalValue };
         }
 
-        const results = simulateTrading();
-        
-        // Display summary statistics
-        const totalTrades = results.trades.length;
-        const profitableTrades = results.trades.filter(t => t.pnl > 0).length;
-        const totalPnL = results.trades.reduce((sum, t) => sum + t.pnl, 0);
-        const winRate = totalTrades > 0 ? (profitableTrades / totalTrades * 100) : 0;
-        const totalReturn = ((results.finalValue - 10000) / 10000 * 100);
+        let chartInstance = null;
 
-        // Build summary cards
-        let summaryHTML = `
-            <div class="stat-card">
-                <div>Starting Capital</div>
-                <div class="stat-value">$${(10000).toLocaleString()}</div>
-            </div>
-            <div class="stat-card">
-                <div>Final Portfolio Value</div>
-                <div class="stat-value">$${results.finalValue.toLocaleString(undefined, {maximumFractionDigits: 0})}</div>
-            </div>
-            <div class="stat-card">
-                <div>Total Return</div>
-                <div class="stat-value ${totalReturn >= 0 ? 'positive' : 'negative'}">${totalReturn >= 0 ? '+' : ''}${totalReturn.toFixed(2)}%</div>
-            </div>
-            <div class="stat-card">
-                <div>Total P&L</div>
-                <div class="stat-value ${totalPnL >= 0 ? 'positive' : 'negative'}">$${totalPnL.toLocaleString(undefined, {maximumFractionDigits: 0})}</div>
-            </div>
-            <div class="stat-card">
-                <div>Total Trades</div>
-                <div class="stat-value">${totalTrades}</div>
-            </div>
-            <div class="stat-card">
-                <div>Win Rate</div>
-                <div class="stat-value ${winRate >= 50 ? 'positive' : 'negative'}">${winRate.toFixed(1)}%</div>
-            </div>
-        `;
+        function render(results) {
+            // Display summary statistics
+            const totalTrades = results.trades.length;
+            const profitableTrades = results.trades.filter(t => t.pnl > 0).length;
+            const totalPnL = results.trades.reduce((sum, t) => sum + t.pnl, 0);
+            const winRate = totalTrades > 0 ? (profitableTrades / totalTrades * 100) : 0;
+            const totalReturn = ((results.finalValue - 10000) / 10000 * 100);
 
-        // Add blacklist information if present
-        const hasBlacklist = {{HAS_BLACKLIST}};
-        if (hasBlacklist) {
-            const blacklistStart = '{{BLACKLIST_START}}';
-            const blacklistEnd = '{{BLACKLIST_END}}';
-            summaryHTML += `
-                <div class="stat-card" style="background: rgba(255, 165, 0, 0.2); border: 1px solid rgba(255, 165, 0, 0.5);">
-                    <div>🚫 Blacklist Period</div>
-                    <div class="stat-value" style="font-size: 1.2em; color: #ffa500;">${blacklistStart}<br>to<br>${blacklistEnd}</div>
+            // Build summary cards
+            let summaryHTML = `
+                <div class="stat-card">
+                    <div>Starting Capital</div>
+                    <div class="stat-value">$${(10000).toLocaleString()}</div>
+                </div>
+                <div class="stat-card">
+                    <div>Final Portfolio Value</div>
+                    <div class="stat-value">$${results.finalValue.toLocaleString(undefined, {maximumFractionDigits: 0})}</div>
+                </div>
+                <div class="stat-card">
+                    <div>Total Return</div>
+                    <div class="stat-value ${totalReturn >= 0 ? 'positive' : 'negative'}">${totalReturn >= 0 ? '+' : ''}${totalReturn.toFixed(2)}%</div>
+                </div>
+                <div class="stat-card">
+                    <div>Total P&L</div>
+                    <div class="stat-value ${totalPnL >= 0 ? 'positive' : 'negative'}">$${totalPnL.toLocaleString(undefined, {maximumFractionDigits: 0})}</div>
+                </div>
+                <div class="stat-card">
+                    <div>Total Trades</div>
+                    <div class="stat-value">${totalTrades}</div>
+                </div>
+                <div class="stat-card">
+                    <div>Win Rate</div>
+                    <div class="stat-value ${winRate >= 50 ? 'positive' : 'negative'}">${winRate.toFixed(1)}%</div>
                 </div>
             `;
-        }
 
-        document.getElementById('summary').innerHTML = summaryHTML;
+            // Add blacklist information if present
+            const hasBlacklist = {{HAS_BLACKLIST}};
+            if (hasBlacklist) {
+                const blacklistStart = '{{BLACKLIST_START}}';
+                const blacklistEnd = '{{BLACKLIST_END}}';
+                summaryHTML += `
+                    <div class="stat-card" style="background: rgba(255, 165, 0, 0.2); border: 1px solid rgba(255, 165, 0, 0.5);">
+                        <div>🚫 Blacklist Period</div>
+                        <div class="stat-value" style="font-size: 1.2em; color: #ffa500;">${blacklistStart}<br>to<br>${blacklistEnd}</div>
+                    </div>
+                `;
+            }
 
-        // Create portfolio value chart
-        const ctx = document.getElementById('portfolioChart').getContext('2d');
-        new Chart(ctx, {
-            type: 'line',
-            data: {
-                labels: results.portfolioHistory.map(p => p.date),
-                datasets: [{
-                    label: 'Portfolio Value',
-                    data: results.portfolioHistory.map(p => p.value),
-                    borderColor: 'rgba(74, 222, 128, 1)',
-                    backgroundColor: 'rgba(74, 222, 128, 0.1)',
-                    borderWidth: 2,
-                    fill: true,
-                    tension: 0.1
-                }]
-            },
-            options: {
-                responsive: true,
-                maintainAspectRatio: false,
-                plugins: {
-                    title: {
-                        display: true,
-                        text: 'Portfolio Value Over Time',
-                        color: 'white',
-                        font: { size: 16 }
-                    },
-                    legend: {
-                        labels: { color: 'white' }
-                    }
+            document.getElementById('summary').innerHTML = summaryHTML;
+
+            // Create / refresh portfolio value chart
+            if (chartInstance) chartInstance.destroy();
+            const ctx = document.getElementById('portfolioChart').getContext('2d');
+            chartInstance = new Chart(ctx, {
+                type: 'line',
+                data: {
+                    labels: results.portfolioHistory.map(p => p.date),
+                    datasets: [{
+                        label: 'Portfolio Value',
+                        data: results.portfolioHistory.map(p => p.value),
+                        borderColor: 'rgba(74, 222, 128, 1)',
+                        backgroundColor: 'rgba(74, 222, 128, 0.1)',
+                        borderWidth: 2,
+                        fill: true,
+                        tension: 0.1
+                    }]
                 },
-                scales: {
-                    x: {
-                        display: false,
-                        grid: { color: 'rgba(255, 255, 255, 0.1)' },
-                        ticks: { color: 'white' }
-                    },
-                    y: {
-                        grid: { color: 'rgba(255, 255, 255, 0.1)' },
-                        ticks: { 
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        title: {
+                            display: true,
+                            text: 'Portfolio Value Over Time',
                             color: 'white',
-                            callback: function(value) {
-                                return '$' + value.toLocaleString();
+                            font: { size: 16 }
+                        },
+                        legend: {
+                            labels: { color: 'white' }
+                        }
+                    },
+                    scales: {
+                        x: {
+                            display: false,
+                            grid: { color: 'rgba(255, 255, 255, 0.1)' },
+                            ticks: { color: 'white' }
+                        },
+                        y: {
+                            grid: { color: 'rgba(255, 255, 255, 0.1)' },
+                            ticks: {
+                                color: 'white',
+                                callback: function(value) {
+                                    return '$' + value.toLocaleString();
+                                }
                             }
                         }
                     }
                 }
-            }
-        });
+            });
 
-        // Populate trades table
-        const tbody = document.getElementById('tradesBody');
-        results.trades.forEach(trade => {
-            const row = document.createElement('tr');
-            const pnlClass = trade.pnl >= 0 ? 'trade-profit' : 'trade-loss';
-            row.innerHTML = `
-                <td>${trade.tradeNumber}</td>
-                <td>${trade.buyDate}</td>
-                <td>${trade.buyPrice.toFixed(2)}</td>
-                <td>${trade.sellDate}</td>
-                <td>${trade.sellPrice.toFixed(2)}</td>
-                <td>${trade.shares.toLocaleString()}</td>
-                <td class="${pnlClass}">${trade.pnl >= 0 ? '+' : ''}${trade.pnl.toLocaleString(undefined, {maximumFractionDigits: 0})}</td>
-                <td>${trade.portfolioValue.toLocaleString(undefined, {maximumFractionDigits: 0})}</td>
-            `;
-            tbody.appendChild(row);
-        });
+            // Populate trades table (clear first)
+            const tbody = document.getElementById('tradesBody');
+            tbody.innerHTML = '';
+            results.trades.forEach(trade => {
+                const row = document.createElement('tr');
+                const pnlClass = trade.pnl >= 0 ? 'trade-profit' : 'trade-loss';
+                const openTag = trade.openPosition ? ' <span style="color:#ffa500; font-size:0.85em;">[open]</span>' : '';
+                row.innerHTML = `
+                    <td>${trade.tradeNumber}</td>
+                    <td>${trade.buyDate}</td>
+                    <td>${trade.buyPrice.toFixed(2)}</td>
+                    <td>${trade.sellDate}${openTag}</td>
+                    <td>${trade.sellPrice.toFixed(2)}</td>
+                    <td>${trade.shares.toLocaleString()}</td>
+                    <td class="${pnlClass}">${trade.pnl >= 0 ? '+' : ''}${trade.pnl.toLocaleString(undefined, {maximumFractionDigits: 0})}</td>
+                    <td>${trade.portfolioValue.toLocaleString(undefined, {maximumFractionDigits: 0})}</td>
+                `;
+                tbody.appendChild(row);
+            });
+        }
+
+        function run() {
+            const transitionOnly = document.getElementById('transitionOnlyCheckbox').checked;
+            const results = simulateTrading({ transitionOnly });
+            render(results);
+        }
+
+        // Initial run + checkbox binding
+        run();
+        document.getElementById('transitionOnlyCheckbox').addEventListener('change', run);
     </script>
 </body>
 </html>
