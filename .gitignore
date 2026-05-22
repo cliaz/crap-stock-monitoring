@@ -1,0 +1,19 @@
+# Simulator outputs (default filename pattern is
+# INDICATOR_STOCK_MONTHS_<kind>_sim_YYYYMMDD_HHMMSS.{html,csv})
+*_trading_sim_*.html
+*_trading_sim_*.csv
+*_exposure_sim_*.html
+*_exposure_sim_*.csv
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# direnv
+.direnv/
+direnv_rebuild.log
+
+# Editor / OS / tooling
+.DS_Store
+.claude/

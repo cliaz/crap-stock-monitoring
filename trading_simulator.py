@@ -11,6 +11,7 @@ import requests as rq
 import pandas as pd
 import yfinance as yf
 from datetime import datetime
+from zoneinfo import ZoneInfo
 import argparse
 
 
@@ -129,6 +130,7 @@ USER_AGENT='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML,
 NYSI_URL = build_nysi_url(INDICATOR_TICKER, STOCK_MONTHS)
 
 
+print(f"Fetching ${INDICATOR_TICKER}...")
 # Get NYSI raw information
 nysi_response = rq.get(NYSI_URL, headers={'user-agent':USER_AGENT})
 nysi_data = nysi_response.text
@@ -157,6 +159,7 @@ for line in nysi_lines:
 ## Get stock historical data from Yahoo Finance
 
 
+print(f"Fetching {STOCK_TICKER} from Yahoo Finance...")
 # Get stock historical data from Yahoo Finance
 stock_yf = yf.Ticker(STOCK_TICKER)
 stock_hist = stock_yf.history(period=months_to_yf_period(STOCK_MONTHS))
@@ -178,6 +181,8 @@ for _, row in stock_hist.iterrows():
     price = row[STOCK_PRICE_TYPE] if STOCK_PRICE_TYPE in row else None
     stock_price_dict[date] = price
 
+
+print(f"{INDICATOR_TICKER} rows: {len(nysi_list)}, stock days: {len(stock_price_dict)}")
 
 # Combine the two data sets
 
@@ -270,12 +275,14 @@ else:
     import re
     csv_pattern = r'(const csvData = `)[\s\S]*?(`;)'
     new_html = re.sub(csv_pattern, f"\\1{csv_string}\\2", html)
+    generated_at = datetime.now(ZoneInfo('Australia/Melbourne')).strftime('%Y-%m-%d %H:%M %Z')
     new_html = new_html.replace('{{STOCK_TICKER}}', STOCK_TICKER)
     new_html = new_html.replace('{{STOCK_PRICE_TYPE}}', STOCK_PRICE_TYPE)
     new_html = new_html.replace('{{STOCK_MONTHS}}', str(STOCK_MONTHS))
     new_html = new_html.replace('{{BUY_SIGNAL}}', BUY_SIGNAL)
     new_html = new_html.replace('{{SELL_SIGNAL}}', SELL_SIGNAL)
     new_html = new_html.replace('{{INDICATOR_TICKER}}', f"${INDICATOR_TICKER.lstrip('$').upper()}")
+    new_html = new_html.replace('{{GENERATED_AT}}', generated_at)
     
     # Add blacklist information
     if BLACKLIST_START and BLACKLIST_END:
