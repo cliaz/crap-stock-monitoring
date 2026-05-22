@@ -22,6 +22,7 @@ import requests as rq
 import pandas as pd
 import yfinance as yf
 from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 import argparse
 
 
@@ -212,9 +213,11 @@ else:
     csv_string = df.to_csv(index=False)
     csv_pattern = r'(const csvData = `)[\s\S]*?(`;)'
     new_html = re.sub(csv_pattern, lambda m: m.group(1) + csv_string + m.group(2), html)
+    generated_at = datetime.now(ZoneInfo('Australia/Melbourne')).strftime('%Y-%m-%d %H:%M %Z')
     new_html = new_html.replace('{{STOCK_TICKER}}', STOCK_TICKER)
     new_html = new_html.replace('{{STOCK_PRICE_TYPE}}', STOCK_PRICE_TYPE)
     new_html = new_html.replace('{{STOCK_MONTHS}}', str(STOCK_MONTHS))
+    new_html = new_html.replace('{{GENERATED_AT}}', generated_at)
 
     if BLACKLIST_START and BLACKLIST_END:
         new_html = new_html.replace('{{BLACKLIST_START}}', str(BLACKLIST_START))
