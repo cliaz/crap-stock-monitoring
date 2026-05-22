@@ -3,115 +3,311 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>{{STOCK_TICKER}} NYMO Exposure Simulation</title>
+    <title>{{STOCK_TICKER}} — NYMO Exposure Simulation</title>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/3.9.1/chart.min.js"></script>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@500;600;700&family=Source+Serif+4:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
     <style>
-        body {
-            font-family: Arial, sans-serif;
-            margin: 20px;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            min-height: 100vh;
-            color: white;
-        }
-        .container {
-            max-width: 1300px;
-            margin: 0 auto;
-            background: rgba(255, 255, 255, 0.1);
-            backdrop-filter: blur(10px);
-            border-radius: 15px;
-            padding: 30px;
-            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
-        }
-        h1 {
-            text-align: center;
-            margin-bottom: 10px;
-            font-size: 2.3em;
-            text-shadow: 2px 2px 4px rgba(0, 0, 0, 0.3);
-        }
-        .meta {
-            text-align: center;
-            margin-bottom: 20px;
-            opacity: 0.85;
-        }
-        .controls {
-            background: rgba(255, 255, 255, 0.1);
-            padding: 18px;
-            border-radius: 10px;
-            margin-bottom: 20px;
-            display: flex;
-            flex-wrap: wrap;
-            justify-content: center;
-            gap: 36px;
-            align-items: center;
-        }
-        .controls label {
-            font-size: 1em;
-            cursor: pointer;
-            user-select: none;
-        }
-        .controls input[type="range"] {
-            width: 220px;
-            vertical-align: middle;
-            margin-left: 10px;
-        }
-        .controls input[type="checkbox"] {
-            transform: scale(1.2);
-            margin-right: 8px;
-            vertical-align: middle;
-        }
-        .strategy-grid {
-            display: grid;
-            grid-template-columns: repeat(3, 1fr);
-            gap: 16px;
-            margin-bottom: 20px;
-        }
-        @media (max-width: 900px) {
-            .strategy-grid { grid-template-columns: 1fr; }
-        }
-        .strategy-card {
-            background: rgba(255, 255, 255, 0.12);
-            padding: 18px;
-            border-radius: 10px;
-            border-left: 4px solid var(--accent, #fff);
-        }
-        .strategy-card h3 {
-            margin: 0 0 12px 0;
-            font-size: 1.1em;
-        }
-        .strategy-card .row {
-            display: flex;
-            justify-content: space-between;
-            margin: 4px 0;
-            font-size: 0.95em;
-        }
-        .strategy-card .row .label { opacity: 0.75; }
-        .strategy-card .row .value { font-weight: bold; }
-        .positive { color: #4ade80; }
-        .negative { color: #f87171; }
-        .chart-container {
-            background: rgba(255, 255, 255, 0.1);
-            padding: 20px;
-            border-radius: 10px;
-            margin: 20px 0;
-            height: 420px;
-        }
-        .chart-container.short {
-            height: 220px;
-        }
-        .blacklist-banner {
-            background: rgba(255, 165, 0, 0.18);
-            border: 1px solid rgba(255, 165, 0, 0.45);
-            padding: 10px;
-            border-radius: 8px;
-            text-align: center;
-            margin-bottom: 16px;
-            color: #ffd28a;
-        }
+:root {
+    --bg: #e8dec9;
+    --surface: #f3eddf;
+    --surface-2: #ebe2cc;
+    --border: #bcae93;
+    --text: #3a2f23;
+    --text-muted: #7a6450;
+    --accent: #b0392b;
+    --positive: #5e7d4d;
+    --negative: #a44434;
+    --font-heading: 'Playfair Display', Georgia, serif;
+    --font-body: 'Source Serif 4', 'Source Serif Pro', Georgia, serif;
+    --font-mono: 'IBM Plex Mono', ui-monospace, Menlo, monospace;
+}
+* { box-sizing: border-box; }
+body {
+    font-family: var(--font-body);
+    background: var(--bg);
+    color: var(--text);
+    margin: 0;
+    padding: 32px 28px;
+    font-variant-numeric: tabular-nums;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    line-height: 1.5;
+}
+.container { max-width: 1300px; margin: 0 auto; }
+h1 {
+    font-family: var(--font-heading);
+    font-size: 2.1rem;
+    font-weight: 600;
+    letter-spacing: -0.005em;
+    margin: 0 0 6px 0;
+    color: var(--text);
+}
+.meta {
+    font-size: 0.875rem;
+    color: var(--text-muted);
+    margin-bottom: 28px;
+    padding-bottom: 18px;
+    border-bottom: 1px solid var(--border);
+    line-height: 1.7;
+}
+.meta b { color: var(--text); font-weight: 600; }
+.controls {
+    background: var(--surface);
+    padding: 16px 20px;
+    border-radius: 6px;
+    border: 1px solid var(--border);
+    display: flex;
+    gap: 36px;
+    align-items: center;
+    flex-wrap: wrap;
+    margin-bottom: 16px;
+}
+.controls label {
+    font-size: 0.9rem;
+    color: var(--text-muted);
+    display: inline-flex;
+    align-items: center;
+    gap: 10px;
+}
+.controls input[type="range"] { width: 220px; accent-color: var(--accent); vertical-align: middle; }
+.controls input[type="checkbox"] { accent-color: var(--accent); transform: scale(1.1); }
+#thresholdValue {
+    font-family: var(--font-mono);
+    font-variant-numeric: tabular-nums;
+    color: var(--text);
+    font-weight: 500;
+    min-width: 4ch;
+    display: inline-block;
+    text-align: right;
+}
+.strategy-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 12px;
+    margin-bottom: 16px;
+}
+@media (max-width: 1100px) { .strategy-grid { grid-template-columns: repeat(2, 1fr); } }
+@media (max-width: 700px) { .strategy-grid { grid-template-columns: 1fr; } }
+.strategy-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 20px 22px;
+    position: relative;
+}
+.strategy-card h3 {
+    margin: 0 0 14px 0;
+    font-size: 0.72rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+.strategy-card .row {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    margin: 10px 0;
+    font-size: 0.9rem;
+}
+.strategy-card .row .label { color: var(--text-muted); font-weight: 400; }
+.strategy-card .row .value {
+    font-family: var(--font-mono);
+    font-variant-numeric: tabular-nums;
+    font-weight: 500;
+    color: var(--text);
+    font-size: 0.95rem;
+}
+.positive { color: var(--positive); }
+.negative { color: var(--negative); }
+.chart-container {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 20px;
+    margin: 16px 0;
+    height: 420px;
+}
+.chart-container.short { height: 240px; }
+.blacklist-banner {
+    background: var(--surface-2);
+    border: 1px solid var(--border);
+    padding: 12px 16px;
+    border-radius: 4px;
+    margin-bottom: 16px;
+    color: var(--text-muted);
+    font-size: 0.875rem;
+}
+
+/* Tooltip ? icons */
+.info-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 16px;
+    height: 16px;
+    border-radius: 50%;
+    background: var(--surface-2);
+    color: var(--text-muted);
+    font-size: 11px;
+    font-weight: 600;
+    font-family: var(--font-body);
+    cursor: help;
+    position: relative;
+    user-select: none;
+    border: 1px solid var(--border);
+    text-transform: none;
+    letter-spacing: 0;
+}
+.info-icon:hover {
+    background: var(--accent);
+    color: var(--surface);
+    border-color: var(--accent);
+}
+.info-icon:hover::after {
+    content: attr(data-tip);
+    position: absolute;
+    top: calc(100% + 8px);
+    left: 50%;
+    transform: translateX(-50%);
+    background: var(--text);
+    color: var(--surface);
+    padding: 10px 14px;
+    border-radius: 4px;
+    font-family: var(--font-body);
+    font-size: 0.78rem;
+    font-weight: 400;
+    text-transform: none;
+    letter-spacing: 0;
+    width: max-content;
+    max-width: 280px;
+    white-space: normal;
+    text-align: left;
+    line-height: 1.55;
+    z-index: 100;
+    box-shadow: 0 4px 18px rgba(58, 47, 35, 0.25);
+    pointer-events: none;
+}
+.info-icon:hover::before {
+    content: '';
+    position: absolute;
+    top: calc(100% + 2px);
+    left: 50%;
+    transform: translateX(-50%);
+    border: 6px solid transparent;
+    border-bottom-color: var(--text);
+    z-index: 100;
+    pointer-events: none;
+}
+
+/* Trades section */
+.trades-section {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 20px;
+    margin: 16px 0;
+}
+.trades-header {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    margin-bottom: 14px;
+    padding-bottom: 12px;
+    border-bottom: 1px solid var(--border);
+    flex-wrap: wrap;
+    gap: 12px;
+}
+.trades-header h2 {
+    font-family: var(--font-heading);
+    font-size: 1.2rem;
+    font-weight: 600;
+    margin: 0;
+}
+.trades-controls {
+    display: inline-flex;
+    align-items: center;
+    gap: 10px;
+    font-size: 0.875rem;
+    color: var(--text-muted);
+}
+.trades-controls select {
+    font-family: var(--font-body);
+    font-size: 0.9rem;
+    color: var(--text);
+    background: var(--surface-2);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 5px 10px;
+    cursor: pointer;
+}
+#tradesCount {
+    font-family: var(--font-mono);
+    font-variant-numeric: tabular-nums;
+    color: var(--text-muted);
+    font-size: 0.85rem;
+}
+.trades-table-wrap {
+    max-height: 500px;
+    overflow-y: auto;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+}
+.trades-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-family: var(--font-mono);
+    font-size: 0.8rem;
+    font-variant-numeric: tabular-nums;
+}
+.trades-table thead {
+    position: sticky;
+    top: 0;
+    z-index: 1;
+    background: var(--surface-2);
+}
+.trades-table th {
+    text-align: left;
+    padding: 10px 12px;
+    border-bottom: 1px solid var(--border);
+    font-family: var(--font-body);
+    font-size: 0.72rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--text-muted);
+    white-space: nowrap;
+}
+.trades-table td {
+    padding: 7px 12px;
+    border-bottom: 1px solid var(--border);
+    color: var(--text);
+    white-space: nowrap;
+}
+.trades-table tr:nth-child(even) td { background: var(--surface-2); }
+.trades-table .num { text-align: right; }
+.trades-table .action-buy { color: var(--positive); font-weight: 500; }
+.trades-table .action-sell { color: var(--negative); font-weight: 500; }
+.trades-table .strategy-tag {
+    display: inline-block;
+    padding: 1px 7px;
+    font-family: var(--font-body);
+    font-size: 0.72rem;
+    font-weight: 500;
+    border-radius: 3px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    color: var(--text-muted);
+}
     </style>
 </head>
 <body>
     <div class="container">
-        <h1>📈 {{STOCK_TICKER}} — NYMO Exposure Simulation</h1>
+        <h1>{{STOCK_TICKER}} — NYMO Exposure Simulation</h1>
         <div class="meta">
             <b>Stock:</b> {{STOCK_TICKER}} &nbsp;|&nbsp; <b>Price:</b> {{STOCK_PRICE_TYPE}} &nbsp;|&nbsp; <b>Window:</b> {{STOCK_MONTHS}} months
             &nbsp;|&nbsp; NYMO scale: −50 → 100% in, 0 → 50%, +50 → 0%
@@ -121,12 +317,15 @@
 
         <div class="controls">
             <label>
-                Rebalance threshold: <span id="thresholdValue">5.0%</span>
+                Rebalance threshold:
                 <input type="range" id="thresholdSlider" min="0" max="20" step="0.5" value="5">
+                <span id="thresholdValue">5.0%</span>
+                <span class="info-icon" data-tip="Minimum drift between current and target equity exposure before the NYMO model rebalances. Higher = fewer trades, looser tracking of the target. Lower = more trades, tighter tracking.">?</span>
             </label>
             <label>
                 <input type="checkbox" id="fractionalCheckbox" checked>
                 Allow fractional shares
+                <span class="info-icon" data-tip="GGUS.AX supports fractional shares. When off, share counts are rounded to whole units and residual cash is carried as float. Applied equally to all three strategies for a fair comparison.">?</span>
             </label>
         </div>
 
@@ -139,6 +338,39 @@
         <div class="chart-container short">
             <canvas id="exposureChart"></canvas>
         </div>
+
+        <div class="trades-section">
+            <div class="trades-header">
+                <h2>Trade Log</h2>
+                <div class="trades-controls">
+                    Strategy:
+                    <select id="strategyFilter">
+                        <option value="All">All</option>
+                        <option value="NYMO Exposure">NYMO Exposure</option>
+                        <option value="Binary NYSI">Binary NYSI</option>
+                        <option value="Buy & Hold">Buy & Hold</option>
+                    </select>
+                    <span id="tradesCount"></span>
+                </div>
+            </div>
+            <div class="trades-table-wrap">
+                <table class="trades-table">
+                    <thead>
+                        <tr>
+                            <th>#</th>
+                            <th id="thStrategy">Strategy</th>
+                            <th>Date</th>
+                            <th>Action</th>
+                            <th class="num">Δ Shares</th>
+                            <th class="num">Price</th>
+                            <th class="num">Cash Δ</th>
+                            <th class="num">Equity</th>
+                        </tr>
+                    </thead>
+                    <tbody id="tradesBody"></tbody>
+                </table>
+            </div>
+        </div>
     </div>
 
     <script>
@@ -149,6 +381,17 @@
     const HAS_BLACKLIST = {{HAS_BLACKLIST}};
     const BLACKLIST_START = '{{BLACKLIST_START}}';
     const BLACKLIST_END = '{{BLACKLIST_END}}';
+
+    const STRATEGY_COLOURS = {
+        'NYMO Exposure': '#b0392b',
+        'Binary NYSI':   '#2c4e7a',
+        'Buy & Hold':    '#5e7d4d',
+    };
+    const STRATEGY_TIPS = {
+        'NYMO Exposure': 'Scales daily equity exposure linearly off NYMO (clamped to ±50). −50 = 100% invested, 0 = 50%, +50 = 0%. Rebalances when current exposure drifts beyond the slider threshold.',
+        'Binary NYSI':   "Buy whenever NYSI is rising ('Black') and we're flat; sell on the first 'Red' (NYSI falling). Mark-to-market closes any open position at sim end so realised P&L matches total return.",
+        'Buy & Hold':    'Buys at the first available price with all starting capital and holds to the end. The honest benchmark every strategy is trying to beat.',
+    };
 
     function parseCSV(csv) {
         const lines = csv.trim().split('\n');
@@ -163,8 +406,6 @@
         });
     }
 
-    // NYMO -> target equity fraction. Clamped to [-50, +50].
-    //   -50 -> 1.0 (100%), 0 -> 0.5 (50%), +50 -> 0.0 (0%)
     function nymoToTargetExposure(nymo) {
         const clamped = Math.max(-50, Math.min(50, nymo));
         return (50 - clamped) / 100;
@@ -172,20 +413,17 @@
 
     function adjustShares(currentShares, targetShares, fractional) {
         if (fractional) return targetShares;
-        // Whole-share rounding: round toward zero for sells (always achievable),
-        // floor for buys (don't overspend).
         if (targetShares > currentShares) return Math.floor(targetShares);
         return Math.ceil(targetShares);
     }
 
-    // --- Strategy: NYMO-scaled exposure ---
     function runExposureModel(data, opts) {
         const thresholdFrac = opts.thresholdPct / 100;
         const fractional = opts.fractional;
         let cash = STARTING_CAPITAL;
         let shares = 0;
-        let trades = 0;
         let history = [];
+        let trades = [];
 
         for (const row of data) {
             const nymo = parseFloat(row['NYMO value']);
@@ -206,10 +444,22 @@
                     const targetSharesRaw = targetSharesValue / price;
                     const newShares = adjustShares(shares, targetSharesRaw, fractional);
                     const delta = newShares - shares;
-                    cash -= delta * price;
-                    shares = newShares;
-                    trades += 1;
-                    exposure = (shares * price) / (cash + shares * price);
+                    if (delta !== 0) {
+                        const cashDelta = -delta * price;
+                        cash += cashDelta;
+                        const newEquity = cash + newShares * price;
+                        trades.push({
+                            strategy: 'NYMO Exposure',
+                            date: row.date,
+                            action: delta > 0 ? 'Buy' : 'Sell',
+                            sharesDelta: delta,
+                            price,
+                            cashDelta,
+                            equity: newEquity,
+                        });
+                        shares = newShares;
+                        exposure = (shares * price) / newEquity;
+                    }
                 }
             }
 
@@ -226,14 +476,14 @@
         return { name: 'NYMO Exposure', history, trades, finalValue: history.length ? history[history.length-1].value : STARTING_CAPITAL };
     }
 
-    // --- Strategy: binary NYSI Red/Black (the existing strategy, any-Black when flat) ---
     function runBinaryModel(data, opts) {
         const fractional = opts.fractional;
         let cash = STARTING_CAPITAL;
         let shares = 0;
-        let trades = 0;
         let history = [];
+        let trades = [];
         let lastValidPrice = null;
+        let lastValidDate = null;
 
         for (let i = 1; i < data.length; i++) {
             const row = data[i];
@@ -242,41 +492,69 @@
             const blacklisted = row['Blacklisted'] === 'True';
             if (!price || isNaN(price)) continue;
             lastValidPrice = price;
+            lastValidDate = row.date;
 
             if (!blacklisted) {
                 if (signal === 'Black' && shares === 0) {
                     let buyShares = cash / price;
                     if (!fractional) buyShares = Math.floor(buyShares);
                     if (buyShares > 0) {
-                        cash -= buyShares * price;
+                        const cashDelta = -buyShares * price;
+                        cash += cashDelta;
                         shares = buyShares;
-                        trades += 1;
+                        trades.push({
+                            strategy: 'Binary NYSI',
+                            date: row.date,
+                            action: 'Buy',
+                            sharesDelta: buyShares,
+                            price,
+                            cashDelta,
+                            equity: cash + shares * price,
+                        });
                     }
                 } else if (signal === 'Red' && shares > 0) {
-                    cash += shares * price;
+                    const cashDelta = shares * price;
+                    cash += cashDelta;
+                    trades.push({
+                        strategy: 'Binary NYSI',
+                        date: row.date,
+                        action: 'Sell',
+                        sharesDelta: -shares,
+                        price,
+                        cashDelta,
+                        equity: cash,
+                    });
                     shares = 0;
-                    trades += 1;
                 }
             }
 
             history.push({ date: row.date, value: cash + shares * price });
         }
 
-        // Mark-to-market close so realised stats include any open position
         if (shares > 0 && lastValidPrice !== null) {
-            cash += shares * lastValidPrice;
+            const cashDelta = shares * lastValidPrice;
+            cash += cashDelta;
+            trades.push({
+                strategy: 'Binary NYSI',
+                date: lastValidDate + ' (MTM)',
+                action: 'Sell',
+                sharesDelta: -shares,
+                price: lastValidPrice,
+                cashDelta,
+                equity: cash,
+            });
             shares = 0;
         }
 
         return { name: 'Binary NYSI', history, trades, finalValue: history.length ? history[history.length-1].value : STARTING_CAPITAL };
     }
 
-    // --- Buy and hold (benchmark) ---
     function runBuyAndHold(data, opts) {
         const fractional = opts.fractional;
         let cash = STARTING_CAPITAL;
         let shares = 0;
         let history = [];
+        let trades = [];
         let bought = false;
 
         for (const row of data) {
@@ -285,51 +563,72 @@
             if (!bought) {
                 let buyShares = cash / price;
                 if (!fractional) buyShares = Math.floor(buyShares);
-                cash -= buyShares * price;
+                const cashDelta = -buyShares * price;
+                cash += cashDelta;
                 shares = buyShares;
                 bought = true;
+                trades.push({
+                    strategy: 'Buy & Hold',
+                    date: row.date,
+                    action: 'Buy',
+                    sharesDelta: buyShares,
+                    price,
+                    cashDelta,
+                    equity: cash + shares * price,
+                });
             }
             history.push({ date: row.date, value: cash + shares * price });
         }
 
-        return { name: 'Buy & Hold', history, trades: bought ? 1 : 0, finalValue: history.length ? history[history.length-1].value : STARTING_CAPITAL };
+        return { name: 'Buy & Hold', history, trades, finalValue: history.length ? history[history.length-1].value : STARTING_CAPITAL };
     }
 
     function fmtMoney(v) {
         return '$' + v.toLocaleString(undefined, { maximumFractionDigits: 0 });
     }
+    function fmtMoneySigned(v) {
+        const sign = v >= 0 ? '+' : '−';
+        return sign + '$' + Math.abs(v).toLocaleString(undefined, { maximumFractionDigits: 0 });
+    }
+    function fmtShares(v) {
+        const sign = v >= 0 ? '+' : '−';
+        return sign + Math.abs(v).toLocaleString(undefined, { maximumFractionDigits: 2 });
+    }
     function fmtPct(v) {
         return (v >= 0 ? '+' : '') + v.toFixed(2) + '%';
     }
-
-    const STRATEGY_COLOURS = {
-        'NYMO Exposure': '#a78bfa',
-        'Binary NYSI':   '#fbbf24',
-        'Buy & Hold':    '#94a3b8',
-    };
+    function escapeHTML(s) {
+        return String(s).replace(/[&<>"']/g, c => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' }[c]));
+    }
 
     let portfolioChart = null;
     let exposureChart = null;
+    let lastStrategies = [];
 
-    function render(strategies, exposureSeries) {
+    function renderSummary(strategies) {
         const grid = document.getElementById('strategyGrid');
         grid.innerHTML = '';
         for (const s of strategies) {
             const ret = ((s.finalValue - STARTING_CAPITAL) / STARTING_CAPITAL) * 100;
             const cls = ret >= 0 ? 'positive' : 'negative';
+            const colour = STRATEGY_COLOURS[s.name];
+            const tip = STRATEGY_TIPS[s.name] || '';
             const card = document.createElement('div');
             card.className = 'strategy-card';
-            card.style.setProperty('--accent', STRATEGY_COLOURS[s.name]);
             card.innerHTML = `
-                <h3 style="color:${STRATEGY_COLOURS[s.name]}">${s.name}</h3>
+                <h3 style="color:${colour}">
+                    ${escapeHTML(s.name)}
+                    <span class="info-icon" data-tip="${escapeHTML(tip)}">?</span>
+                </h3>
                 <div class="row"><span class="label">Final value</span><span class="value">${fmtMoney(s.finalValue)}</span></div>
                 <div class="row"><span class="label">Return</span><span class="value ${cls}">${fmtPct(ret)}</span></div>
-                <div class="row"><span class="label">Trades</span><span class="value">${s.trades.toLocaleString()}</span></div>
+                <div class="row"><span class="label">Trades</span><span class="value">${s.trades.length.toLocaleString()}</span></div>
             `;
             grid.appendChild(card);
         }
+    }
 
-        // Portfolio value overlay
+    function renderCharts(strategies, exposureSeries) {
         const labels = strategies[0].history.map(p => p.date);
         const datasets = strategies.map(s => ({
             label: s.name,
@@ -351,59 +650,29 @@
                 maintainAspectRatio: false,
                 interaction: { mode: 'index', intersect: false },
                 plugins: {
-                    title: { display: true, text: 'Portfolio Value — Strategy Comparison', color: 'white', font: { size: 15 } },
-                    legend: { labels: { color: 'white' } },
-                    tooltip: {
-                        callbacks: {
-                            label: ctx => `${ctx.dataset.label}: ${fmtMoney(ctx.parsed.y)}`,
-                        },
-                    },
+                    title: { display: true, text: 'Portfolio Value — Strategy Comparison', color: '#3a2f23', font: { size: 14, family: 'Source Serif 4', weight: '600' } },
+                    legend: { labels: { color: '#3a2f23', font: { family: 'Source Serif 4' } } },
+                    tooltip: { callbacks: { label: ctx => `${ctx.dataset.label}: ${fmtMoney(ctx.parsed.y)}` } },
                 },
                 scales: {
-                    x: { display: false, ticks: { color: 'white' } },
+                    x: { display: false, ticks: { color: '#7a6450' } },
                     y: {
-                        grid: { color: 'rgba(255,255,255,0.1)' },
-                        ticks: { color: 'white', callback: v => '$' + v.toLocaleString() },
+                        grid: { color: 'rgba(58,47,35,0.12)' },
+                        ticks: { color: '#7a6450', font: { family: 'IBM Plex Mono' }, callback: v => '$' + v.toLocaleString() },
                     },
                 },
             },
         });
 
-        // Exposure / NYMO trace
         if (exposureChart) exposureChart.destroy();
         exposureChart = new Chart(document.getElementById('exposureChart').getContext('2d'), {
             type: 'line',
             data: {
                 labels: exposureSeries.map(p => p.date),
                 datasets: [
-                    {
-                        label: 'NYMO',
-                        data: exposureSeries.map(p => p.nymo),
-                        borderColor: '#60a5fa',
-                        borderWidth: 1.5,
-                        pointRadius: 0,
-                        yAxisID: 'yNymo',
-                        tension: 0.1,
-                    },
-                    {
-                        label: 'Target exposure %',
-                        data: exposureSeries.map(p => p.targetExposure * 100),
-                        borderColor: '#a78bfa',
-                        borderWidth: 1.5,
-                        borderDash: [4, 3],
-                        pointRadius: 0,
-                        yAxisID: 'yExp',
-                        tension: 0.1,
-                    },
-                    {
-                        label: 'Actual exposure %',
-                        data: exposureSeries.map(p => p.exposure * 100),
-                        borderColor: '#22c55e',
-                        borderWidth: 1.5,
-                        pointRadius: 0,
-                        yAxisID: 'yExp',
-                        tension: 0.1,
-                    },
+                    { label: 'NYMO',              data: exposureSeries.map(p => p.nymo),                  borderColor: '#2c4e7a', borderWidth: 1.5, pointRadius: 0, yAxisID: 'yNymo', tension: 0.1 },
+                    { label: 'Target exposure %', data: exposureSeries.map(p => p.targetExposure * 100), borderColor: '#b0392b', borderWidth: 1.5, borderDash: [4, 3], pointRadius: 0, yAxisID: 'yExp', tension: 0.1 },
+                    { label: 'Actual exposure %', data: exposureSeries.map(p => p.exposure * 100),       borderColor: '#5e7d4d', borderWidth: 1.5, pointRadius: 0, yAxisID: 'yExp', tension: 0.1 },
                 ],
             },
             options: {
@@ -411,26 +680,70 @@
                 maintainAspectRatio: false,
                 interaction: { mode: 'index', intersect: false },
                 plugins: {
-                    title: { display: true, text: 'NYMO vs Target/Actual Exposure', color: 'white', font: { size: 13 } },
-                    legend: { labels: { color: 'white', boxWidth: 12, font: { size: 11 } } },
+                    title: { display: true, text: 'NYMO vs Target/Actual Exposure', color: '#3a2f23', font: { size: 13, family: 'Source Serif 4', weight: '600' } },
+                    legend: { labels: { color: '#3a2f23', boxWidth: 12, font: { size: 11, family: 'Source Serif 4' } } },
                 },
                 scales: {
-                    x: { display: false, ticks: { color: 'white' } },
+                    x: { display: false, ticks: { color: '#7a6450' } },
                     yNymo: {
                         position: 'left',
-                        title: { display: true, text: 'NYMO', color: '#60a5fa' },
-                        grid: { color: 'rgba(255,255,255,0.08)' },
-                        ticks: { color: '#60a5fa' },
+                        title: { display: true, text: 'NYMO', color: '#2c4e7a', font: { family: 'Source Serif 4' } },
+                        grid: { color: 'rgba(58,47,35,0.10)' },
+                        ticks: { color: '#2c4e7a', font: { family: 'IBM Plex Mono' } },
                     },
                     yExp: {
                         position: 'right',
                         min: 0, max: 100,
-                        title: { display: true, text: 'Exposure %', color: '#a78bfa' },
+                        title: { display: true, text: 'Exposure %', color: '#b0392b', font: { family: 'Source Serif 4' } },
                         grid: { drawOnChartArea: false },
-                        ticks: { color: '#a78bfa', callback: v => v + '%' },
+                        ticks: { color: '#b0392b', font: { family: 'IBM Plex Mono' }, callback: v => v + '%' },
                     },
                 },
             },
+        });
+    }
+
+    function renderTrades() {
+        const filter = document.getElementById('strategyFilter').value;
+        const tbody = document.getElementById('tradesBody');
+        const countEl = document.getElementById('tradesCount');
+        const thStrategy = document.getElementById('thStrategy');
+
+        let all = [];
+        for (const s of lastStrategies) {
+            for (const t of s.trades) all.push(t);
+        }
+        all.sort((a, b) => {
+            const da = (a.date || '').split(' ')[0];
+            const db = (b.date || '').split(' ')[0];
+            if (da < db) return -1;
+            if (da > db) return 1;
+            return 0;
+        });
+
+        const filtered = filter === 'All' ? all : all.filter(t => t.strategy === filter);
+        countEl.textContent = filtered.length.toLocaleString() + ' trade' + (filtered.length === 1 ? '' : 's');
+        thStrategy.style.display = filter === 'All' ? '' : 'none';
+
+        tbody.innerHTML = '';
+        const shortName = { 'NYMO Exposure': 'NYMO', 'Binary NYSI': 'Binary', 'Buy & Hold': 'B&H' };
+        filtered.forEach((t, i) => {
+            const tr = document.createElement('tr');
+            const actionClass = t.action === 'Buy' ? 'action-buy' : 'action-sell';
+            const strategyCell = filter === 'All'
+                ? `<td><span class="strategy-tag" style="color:${STRATEGY_COLOURS[t.strategy]}">${shortName[t.strategy] || t.strategy}</span></td>`
+                : '';
+            tr.innerHTML = `
+                <td>${i + 1}</td>
+                ${strategyCell}
+                <td>${escapeHTML(t.date)}</td>
+                <td class="${actionClass}">${t.action}</td>
+                <td class="num">${fmtShares(t.sharesDelta)}</td>
+                <td class="num">$${t.price.toFixed(2)}</td>
+                <td class="num">${fmtMoneySigned(t.cashDelta)}</td>
+                <td class="num">${fmtMoney(t.equity)}</td>
+            `;
+            tbody.appendChild(tr);
         });
     }
 
@@ -444,20 +757,22 @@
         const binary = runBinaryModel(data, { fractional });
         const buyHold = runBuyAndHold(data, { fractional });
 
-        render([exposure, binary, buyHold], exposure.history);
+        lastStrategies = [exposure, binary, buyHold];
+        renderSummary(lastStrategies);
+        renderCharts(lastStrategies, exposure.history);
+        renderTrades();
     }
 
-    // Blacklist banner
     if (HAS_BLACKLIST) {
         document.getElementById('blacklistBanner').innerHTML =
-            `🚫 Blacklist period (no trades): <b>${BLACKLIST_START}</b> to <b>${BLACKLIST_END}</b>`;
+            `Blacklist period (no trades): <b>${BLACKLIST_START}</b> to <b>${BLACKLIST_END}</b>`;
         document.getElementById('blacklistBanner').className = 'blacklist-banner';
     }
 
-    // Initial render + bind controls
     run();
     document.getElementById('thresholdSlider').addEventListener('input', run);
     document.getElementById('fractionalCheckbox').addEventListener('change', run);
+    document.getElementById('strategyFilter').addEventListener('change', renderTrades);
     </script>
 </body>
 </html>
