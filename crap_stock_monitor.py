@@ -338,14 +338,13 @@ def check_for_stale_data(state, last_data_day, mailer, symbol, today):
     return False
 
 
-def run_once(state_path, symbol, email_frequency, mailer, fetch=fetch_indicator, today=None, now=None):
+def run_once(state_path, symbol, email_frequency, mailer, fetch=fetch_indicator, today=None):
     """
     Do one check: fetch data, and if there's a new trading day, update the
     state and send whatever email is due. The state only moves forward once
     the email has been sent, so a failed email is retried on the next check.
     """
     today = today or date.today()
-    now = now or datetime.now(timezone.utc)
     symbol = normalise_symbol(symbol)
     state = load_state(state_path)
     saved_day = date.fromisoformat(state.last_date) if state.last_date else None
@@ -357,13 +356,6 @@ def run_once(state_path, symbol, email_frequency, mailer, fetch=fetch_indicator,
         if check_for_stale_data(state, saved_day, mailer, symbol, today):
             save_state(state_path, state)
         return
-
-    # While the US market is open, StockCharts may show a part-day value for
-    # today. Only use days whose close has happened.
-    finished_days = [point for point in data if us_close(point.day) <= now]
-    if len(finished_days) < len(data):
-        log(f"Ignoring {data[-1].day}: the US market hasn't closed yet")
-    data = finished_days
 
     colour = latest_colour(data)
     if colour is None:

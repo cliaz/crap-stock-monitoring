@@ -16,7 +16,6 @@ Watches the NYSE McClellan Summation Index (NYSI) on StockCharts and emails you 
 - New NYSI data appears soon after the US market closes at 16:00 New York time. In Melbourne that's 08:00 (Nov–Mar), 06:00 (mid-year) or 07:00 (the weeks when only one country is on daylight saving). The monitor works this out itself, so there's no time window to configure.
 - From each US close it checks every `--interval` seconds (default 2 minutes) for `--window-hours` (default 3). Once the new day's data is in, it sleeps until the next trading day's close.
 - If the data hasn't appeared by the end of that window (a US holiday, or StockCharts running late) it checks every `--slow-interval` (default hourly) until it does, and is quick again from the next close.
-- While the US market is open StockCharts may show a part-day value; days whose close hasn't happened yet are ignored.
 - A day is **Black** if NYSI rose from the day before, **Red** if it fell. On a flat day it keeps the direction of the last real move (Red if there hasn't been one yet).
 - If the colour differs from the last one it saw, it emails you. With `--email-frequency daily` it emails every new trading day instead, and says whether the colour changed.
 - It remembers the last trading day and colour in `data/NYSI_state.json`, so restarts don't send duplicates. The first run just saves a starting point.

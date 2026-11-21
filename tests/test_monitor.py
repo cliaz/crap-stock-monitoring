@@ -7,7 +7,7 @@ Run them with:
 """
 
 import json
-from datetime import date, datetime, time as clock_time, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 
 import pytest
 
@@ -176,11 +176,6 @@ SATURDAY = date(2026, 11, 21)
 TUESDAY = date(2026, 11, 24)
 
 
-def end_of(day):
-    """Late on `day` (UTC), after that day's US close."""
-    return datetime.combine(day, clock_time(23, 59), tzinfo=timezone.utc)
-
-
 def run(tmp_path, data, mailer, frequency="colour_change", today=SATURDAY, error=None):
     return csm.run_once(
         state_path=tmp_path / "NYSI_state.json",
@@ -189,7 +184,6 @@ def run(tmp_path, data, mailer, frequency="colour_change", today=SATURDAY, error
         mailer=mailer,
         fetch=FakeFetcher(data, error),
         today=today,
-        now=end_of(today),
     )
 
 
@@ -261,7 +255,7 @@ def test_fetch_failure_does_not_crash_or_touch_state(tmp_path):
 
 def test_check_fetches_data_only_once(tmp_path):
     fetcher = FakeFetcher(FRIDAY_DATA)
-    csm.run_once(tmp_path / "s.json", "NYSI", "colour_change", None, fetch=fetcher, today=SATURDAY, now=end_of(SATURDAY))
+    csm.run_once(tmp_path / "s.json", "NYSI", "colour_change", None, fetch=fetcher, today=SATURDAY)
     assert fetcher.calls == 1
 
 
@@ -451,18 +445,3 @@ def test_never_schedules_in_the_past():
     now = utc("2026-11-23 21:00")   # exactly at the close
     assert next_check(now, date(2026, 11, 20)) > now
 
-
-def test_a_day_whose_us_close_hasnt_happened_is_ignored(tmp_path):
-    # Tuesday 24 Nov, 15:00 in New York: the market is still open, so a value
-    # dated the 24th is only part of the day and must not be used yet.
-    during_us_trading = utc("2026-11-24 20:00")
-    partial = points(("2026-11-20", 3.0), ("2026-11-23", 4.0), ("2026-11-24", 1.0))
-    mailer = FakeMailer()
-    state_path = tmp_path / "NYSI_state.json"
-    csm.save_state(state_path, State("2026-11-23", "Black", 4.0))
-
-    csm.run_once(state_path, "NYSI", "colour_change", mailer, fetch=FakeFetcher(partial),
-                 today=date(2026, 11, 25), now=during_us_trading)
-
-    assert mailer.sent == []
-    assert csm.load_state(state_path).last_date == "2026-11-23"
