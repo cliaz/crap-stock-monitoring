@@ -6,7 +6,14 @@ Watches the NYSI (NYSE McClellan Summation Index) on StockCharts and emails you
 when it flips between Red (falling) and Black (rising).
 
 How it works:
-  - Every --interval seconds it downloads the last few weeks of NYSI values.
+  - New NYSI data appears soon after the US market closes (16:00 New York
+    time, which is 06:00-08:00 in Melbourne depending on daylight saving).
+  - From each US close it checks every --interval seconds (default 2 minutes)
+    for --window-hours (default 3). Once the new day's data is in, it sleeps
+    until the next trading day's close.
+  - If the data hasn't appeared by the end of the window (US holiday,
+    StockCharts running late) it checks every --slow-interval (default
+    hourly) until it does, and is quick again at the next close.
   - When a new trading day appears, it works out that day's colour.
   - If the colour differs from the last one it saw, it sends an email.
   - It remembers the last day and colour in a small state file, so a restart
@@ -24,10 +31,12 @@ import smtplib
 import sys
 import time
 from dataclasses import dataclass, asdict
-from datetime import date, datetime
+from datetime import date, datetime, time as clock_time, timedelta, timezone
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from pathlib import Path
+
+from zoneinfo import ZoneInfo
 
 import requests
 
@@ -47,6 +56,9 @@ SMTP_TIMEOUT_SECONDS = 30
 # weekend means 3 days without new data, a long weekend 4-5. Six or more
 # days means something is wrong.
 STALE_AFTER_DAYS = 5
+
+US_MARKET_TIMEZONE = ZoneInfo("America/New_York")
+US_MARKET_CLOSE = clock_time(16, 0)
 
 EMAIL_FREQUENCIES = ["colour_change", "daily"]
 BLACK = "Black"   # NYSI went up
@@ -326,13 +338,14 @@ def check_for_stale_data(state, last_data_day, mailer, symbol, today):
     return False
 
 
-def run_once(state_path, symbol, email_frequency, mailer, fetch=fetch_indicator, today=None):
+def run_once(state_path, symbol, email_frequency, mailer, fetch=fetch_indicator, today=None, now=None):
     """
     Do one check: fetch data, and if there's a new trading day, update the
     state and send whatever email is due. The state only moves forward once
     the email has been sent, so a failed email is retried on the next check.
     """
     today = today or date.today()
+    now = now or datetime.now(timezone.utc)
     symbol = normalise_symbol(symbol)
     state = load_state(state_path)
     saved_day = date.fromisoformat(state.last_date) if state.last_date else None
@@ -344,6 +357,13 @@ def run_once(state_path, symbol, email_frequency, mailer, fetch=fetch_indicator,
         if check_for_stale_data(state, saved_day, mailer, symbol, today):
             save_state(state_path, state)
         return
+
+    # While the US market is open, StockCharts may show a part-day value for
+    # today. Only use days whose close has happened.
+    finished_days = [point for point in data if us_close(point.day) <= now]
+    if len(finished_days) < len(data):
+        log(f"Ignoring {data[-1].day}: the US market hasn't closed yet")
+    data = finished_days
 
     colour = latest_colour(data)
     if colour is None:
@@ -385,6 +405,64 @@ def run_once(state_path, symbol, email_frequency, mailer, fetch=fetch_indicator,
 
 
 # ---------------------------------------------------------------------------
+# Scheduling: when to check next
+# ---------------------------------------------------------------------------
+#
+# All times here are timezone-aware, so daylight saving in New York and
+# Melbourne (which change on different dates) is handled by zoneinfo.
+# US public holidays aren't known; on a holiday the expected data just
+# doesn't arrive, and the slow polling below covers it.
+
+def us_close(trading_day):
+    """The US market close on `trading_day`, as a UTC datetime."""
+    close = datetime.combine(trading_day, US_MARKET_CLOSE, tzinfo=US_MARKET_TIMEZONE)
+    return close.astimezone(timezone.utc)
+
+
+def next_trading_day(day):
+    """The next weekday after `day`."""
+    day = day + timedelta(days=1)
+    while day.weekday() >= 5:          # 5 = Saturday, 6 = Sunday
+        day = day + timedelta(days=1)
+    return day
+
+
+def latest_close_before(now):
+    """The most recent weekday whose US close is at or before `now`."""
+    day = now.astimezone(US_MARKET_TIMEZONE).date()
+    while day.weekday() >= 5 or us_close(day) > now:
+        day = day - timedelta(days=1)
+    return day
+
+
+def next_check_time(now, last_data_day, fast_interval, fast_window, slow_interval):
+    """
+    Work out when to check next.
+
+    now            -- current time (timezone-aware)
+    last_data_day  -- the last trading day we have data for, or None
+    """
+    if last_data_day is None:
+        return now + fast_interval
+
+    due_day = next_trading_day(last_data_day)
+    latest_close_day = latest_close_before(now)
+
+    # The next day's data isn't due yet: sleep until its close.
+    if latest_close_day < due_day:
+        return us_close(due_day)
+
+    # Data is due. Poll quickly for a while after the most recent close...
+    window_start = us_close(latest_close_day)
+    if now < window_start + fast_window:
+        return now + fast_interval
+
+    # ...then slowly, but be quick again from the next close.
+    following_close = us_close(next_trading_day(latest_close_day))
+    return min(now + slow_interval, following_close)
+
+
+# ---------------------------------------------------------------------------
 # Command line
 # ---------------------------------------------------------------------------
 
@@ -401,8 +479,15 @@ def parse_args():
     parser = argparse.ArgumentParser(description="Email an alert when the NYSI flips between Red and Black.")
     parser.add_argument("--symbol", default=os.getenv("SYMBOL", "NYSI"),
                         help="StockCharts symbol, with or without '$' (default: NYSI, or SYMBOL env var)")
-    parser.add_argument("--interval", type=int, default=int(os.getenv("CHECK_INTERVAL", "900")),
-                        help="Seconds between checks (default: 900, or CHECK_INTERVAL env var)")
+    parser.add_argument("--interval", type=int, default=int(os.getenv("CHECK_INTERVAL", "120")),
+                        help="Seconds between checks while waiting for new data after the US close "
+                             "(default: 120, or CHECK_INTERVAL env var)")
+    parser.add_argument("--window-hours", type=float, default=float(os.getenv("FAST_WINDOW_HOURS", "3")),
+                        help="How long after the US close to keep checking every --interval "
+                             "(default: 3, or FAST_WINDOW_HOURS env var)")
+    parser.add_argument("--slow-interval", type=int, default=int(os.getenv("SLOW_CHECK_INTERVAL", "3600")),
+                        help="Seconds between checks when data is late, after the window "
+                             "(default: 3600, or SLOW_CHECK_INTERVAL env var)")
     parser.add_argument("--data-dir", default=os.getenv("DATA_DIR") or str(SCRIPT_DIR / "data"),
                         help="Folder for the state file (default: ./data, or DATA_DIR env var)")
     parser.add_argument("--email-frequency", default=os.getenv("EMAIL_FREQUENCY", "colour_change"),
@@ -414,7 +499,7 @@ def parse_args():
     parser.add_argument("--test-email", action="store_true", help="Send a test email and exit")
     parser.add_argument("--validate-email", action="store_true", help="Check the email login works and exit")
     parser.add_argument("--window", default=os.getenv("MONITORING_WINDOW"),
-                        help="No longer used: the monitor now checks all day and only acts on new data")
+                        help="No longer used: checks are now timed from the US market close")
     return parser.parse_args()
 
 
@@ -462,14 +547,26 @@ def main():
         run_once(state_path, symbol, email_frequency, mailer)
         return 0
 
-    log(f"Watching {symbol} every {args.interval}s, emailing on: {email_frequency}. State: {state_path}")
+    fast_interval = timedelta(seconds=args.interval)
+    fast_window = timedelta(hours=args.window_hours)
+    slow_interval = timedelta(seconds=args.slow_interval)
+    log(f"Watching {symbol}: every {args.interval}s for {args.window_hours}h after each US close, "
+        f"then every {args.slow_interval}s if data is late. Emailing on: {email_frequency}. State: {state_path}")
     try:
         while True:
             try:
                 run_once(state_path, symbol, email_frequency, mailer)
             except Exception as error:
                 log(f"ERROR: unexpected problem during check: {error}")
-            time.sleep(args.interval)
+
+            state = load_state(state_path)
+            last_data_day = date.fromisoformat(state.last_date) if state.last_date else None
+            now = datetime.now(timezone.utc)
+            wake_at = next_check_time(now, last_data_day, fast_interval, fast_window, slow_interval)
+            wait_seconds = max(1, (wake_at - now).total_seconds())
+            if wait_seconds > 600:
+                log(f"Next check at {wake_at.astimezone().strftime('%a %Y-%m-%d %H:%M %Z')}")
+            time.sleep(wait_seconds)
     except KeyboardInterrupt:
         log("Stopped")
     return 0

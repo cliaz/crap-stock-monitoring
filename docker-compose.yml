@@ -9,11 +9,14 @@ services:
     environment:
       TZ: Australia/Sydney
       DATA_DIR: /app/data
-      CHECK_INTERVAL: 900        # seconds between checks; it only acts when a new trading day appears
+      CHECK_INTERVAL: 120        # seconds between checks for 3h after each US close (06:00-08:00 Melbourne)
+      FAST_WINDOW_HOURS: 3       # how long to keep checking quickly after the close
+      SLOW_CHECK_INTERVAL: 3600  # if data is late (US holiday etc.), check this often until it arrives
       SYMBOL: NYSI
       EMAIL_FREQUENCY: daily     # colour_change = only on a Red/Black flip, daily = every new trading day
       # the above are the equivalent to running the script with:
-      # command: ["--symbol", "NYSI", "--interval", "900", "--email-frequency", "daily", "--data-dir", "/app/data"]
+      # command: ["--symbol", "NYSI", "--interval", "120", "--window-hours", "3", "--slow-interval", "3600",
+      #           "--email-frequency", "daily", "--data-dir", "/app/data"]
     # For one-time actions, override the command:
     # command: ["--test-email"]           # Send a test email
     # command: ["--check"]                # Check once and exit

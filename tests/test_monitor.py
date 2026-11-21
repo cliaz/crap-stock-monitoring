@@ -7,7 +7,7 @@ Run them with:
 """
 
 import json
-from datetime import date
+from datetime import date, datetime, time as clock_time, timedelta, timezone
 
 import pytest
 
@@ -176,6 +176,11 @@ SATURDAY = date(2026, 11, 21)
 TUESDAY = date(2026, 11, 24)
 
 
+def end_of(day):
+    """Late on `day` (UTC), after that day's US close."""
+    return datetime.combine(day, clock_time(23, 59), tzinfo=timezone.utc)
+
+
 def run(tmp_path, data, mailer, frequency="colour_change", today=SATURDAY, error=None):
     return csm.run_once(
         state_path=tmp_path / "NYSI_state.json",
@@ -184,6 +189,7 @@ def run(tmp_path, data, mailer, frequency="colour_change", today=SATURDAY, error
         mailer=mailer,
         fetch=FakeFetcher(data, error),
         today=today,
+        now=end_of(today),
     )
 
 
@@ -255,7 +261,7 @@ def test_fetch_failure_does_not_crash_or_touch_state(tmp_path):
 
 def test_check_fetches_data_only_once(tmp_path):
     fetcher = FakeFetcher(FRIDAY_DATA)
-    csm.run_once(tmp_path / "s.json", "NYSI", "colour_change", None, fetch=fetcher, today=SATURDAY)
+    csm.run_once(tmp_path / "s.json", "NYSI", "colour_change", None, fetch=fetcher, today=SATURDAY, now=end_of(SATURDAY))
     assert fetcher.calls == 1
 
 
@@ -356,3 +362,107 @@ def test_email_details_are_loaded_from_the_script_folder_not_the_cwd(tmp_path, m
 
 def test_missing_email_details_gives_no_mailer(tmp_path):
     assert csm.load_mailer(tmp_path / "email_details.py") is None
+
+
+# ---------------------------------------------------------------------------
+# Scheduling: when to check next
+# ---------------------------------------------------------------------------
+#
+# The new day's data appears soon after the US close (16:00 New York time).
+# The monitor polls quickly for FAST_WINDOW after that, then sleeps until the
+# next trading day's close. If the data is late (US holiday, StockCharts slow)
+# it drops to a slow poll, but is quick again at the next close.
+
+FAST = timedelta(minutes=2)
+WINDOW = timedelta(hours=3)
+SLOW = timedelta(hours=1)
+
+
+def utc(text):
+    return datetime.fromisoformat(text).replace(tzinfo=timezone.utc)
+
+
+def next_check(now, last_data_day):
+    return csm.next_check_time(now, last_data_day, fast_interval=FAST, fast_window=WINDOW, slow_interval=SLOW)
+
+
+def test_us_close_in_utc_follows_new_york_daylight_saving():
+    assert csm.us_close(date(2026, 11, 23)) == utc("2026-11-23 21:00")   # EST
+    assert csm.us_close(date(2026, 7, 20)) == utc("2026-07-20 20:00")    # EDT
+
+
+def test_next_trading_day_skips_the_weekend():
+    assert csm.next_trading_day(date(2026, 11, 20)) == date(2026, 11, 23)   # Fri -> Mon
+    assert csm.next_trading_day(date(2026, 11, 23)) == date(2026, 11, 24)   # Mon -> Tue
+
+
+def test_after_fridays_data_it_sleeps_until_mondays_us_close():
+    saturday_morning_melbourne = utc("2026-11-20 22:30")
+    assert next_check(saturday_morning_melbourne, date(2026, 11, 20)) == utc("2026-11-23 21:00")   # Tue 08:00 AEDT
+
+
+def test_polls_fast_inside_the_window():
+    now = utc("2026-11-23 21:30")
+    assert next_check(now, date(2026, 11, 20)) == now + FAST
+
+
+def test_polls_slowly_once_the_window_has_passed_without_data():
+    now = utc("2026-11-24 01:00")   # 4 hours after the close
+    assert next_check(now, date(2026, 11, 20)) == now + SLOW
+
+
+def test_slow_polling_is_cut_short_for_the_next_close():
+    now = utc("2026-11-24 20:50")   # data for Monday never came; Tuesday closes at 21:00
+    assert next_check(now, date(2026, 11, 20)) == utc("2026-11-24 21:00")
+
+
+def test_after_a_us_holiday_it_polls_fast_at_the_next_close():
+    # Thanksgiving: no data for Thu 26 Nov. Friday's close is 2026-11-27 21:00 UTC.
+    now = utc("2026-11-27 21:10")
+    assert next_check(now, date(2026, 11, 25)) == now + FAST
+
+
+def test_melbourne_mid_year_release_is_six_am():
+    # Mid-year (EDT and AEST) the close is 20:00 UTC = 06:00 in Melbourne.
+    friday_night = utc("2026-07-17 22:00")
+    assert next_check(friday_night, date(2026, 7, 17)) == utc("2026-07-20 20:00")
+
+
+def test_daylight_saving_changeover_weeks():
+    # March 2027: the US is on EDT, Melbourne still on AEDT, so the close is 07:00 in Melbourne.
+    assert csm.us_close(date(2027, 3, 15)) == utc("2027-03-15 20:00")
+    # October 2026: Melbourne is on AEDT, the US still on EDT, again 07:00 in Melbourne.
+    assert csm.us_close(date(2026, 10, 12)) == utc("2026-10-12 20:00")
+
+
+def test_no_saved_data_yet_retries_after_the_fast_interval():
+    now = utc("2026-11-22 03:00")
+    assert next_check(now, None) == now + FAST
+
+
+def test_very_old_state_counts_as_overdue_data():
+    inside_a_window = utc("2026-11-23 21:30")
+    outside_a_window = utc("2026-11-23 10:00")
+    assert next_check(inside_a_window, date(2025, 12, 19)) == inside_a_window + FAST
+    assert next_check(outside_a_window, date(2025, 12, 19)) == outside_a_window + SLOW
+
+
+def test_never_schedules_in_the_past():
+    now = utc("2026-11-23 21:00")   # exactly at the close
+    assert next_check(now, date(2026, 11, 20)) > now
+
+
+def test_a_day_whose_us_close_hasnt_happened_is_ignored(tmp_path):
+    # Tuesday 24 Nov, 15:00 in New York: the market is still open, so a value
+    # dated the 24th is only part of the day and must not be used yet.
+    during_us_trading = utc("2026-11-24 20:00")
+    partial = points(("2026-11-20", 3.0), ("2026-11-23", 4.0), ("2026-11-24", 1.0))
+    mailer = FakeMailer()
+    state_path = tmp_path / "NYSI_state.json"
+    csm.save_state(state_path, State("2026-11-23", "Black", 4.0))
+
+    csm.run_once(state_path, "NYSI", "colour_change", mailer, fetch=FakeFetcher(partial),
+                 today=date(2026, 11, 25), now=during_us_trading)
+
+    assert mailer.sent == []
+    assert csm.load_state(state_path).last_date == "2026-11-23"

@@ -13,7 +13,10 @@ Watches the NYSE McClellan Summation Index (NYSI) on StockCharts and emails you 
 
 ### How it works
 
-- Every `--interval` seconds (default 15 minutes) it downloads the last few weeks of NYSI values. It checks all day; it only does anything when a new trading day appears, so there's no time window or time zone to configure.
+- New NYSI data appears soon after the US market closes at 16:00 New York time. In Melbourne that's 08:00 (Nov–Mar), 06:00 (mid-year) or 07:00 (the weeks when only one country is on daylight saving). The monitor works this out itself, so there's no time window to configure.
+- From each US close it checks every `--interval` seconds (default 2 minutes) for `--window-hours` (default 3). Once the new day's data is in, it sleeps until the next trading day's close.
+- If the data hasn't appeared by the end of that window (a US holiday, or StockCharts running late) it checks every `--slow-interval` (default hourly) until it does, and is quick again from the next close.
+- While the US market is open StockCharts may show a part-day value; days whose close hasn't happened yet are ignored.
 - A day is **Black** if NYSI rose from the day before, **Red** if it fell. On a flat day it keeps the direction of the last real move (Red if there hasn't been one yet).
 - If the colour differs from the last one it saw, it emails you. With `--email-frequency daily` it emails every new trading day instead, and says whether the colour changed.
 - It remembers the last trading day and colour in `data/NYSI_state.json`, so restarts don't send duplicates. The first run just saves a starting point.
@@ -31,8 +34,8 @@ python crap_stock_monitor.py --check           # one check, then exit
 ### Usage
 
 ```bash
-python crap_stock_monitor.py                     # keep watching (every 15 min)
-python crap_stock_monitor.py --interval 600      # check every 10 min
+python crap_stock_monitor.py                     # keep watching
+python crap_stock_monitor.py --interval 60       # check every minute after the US close
 python crap_stock_monitor.py --email-frequency daily
 python crap_stock_monitor.py --check             # one check and exit
 python crap_stock_monitor.py --history           # recent days and their colours
@@ -40,7 +43,7 @@ python crap_stock_monitor.py --validate-email    # check the email login works
 python crap_stock_monitor.py --test-email        # send a test email
 ```
 
-Every option can also be set with an environment variable (used by `docker-compose.yml`): `SYMBOL`, `CHECK_INTERVAL`, `DATA_DIR`, `EMAIL_FREQUENCY`. The old `--window` / `MONITORING_WINDOW` setting is ignored.
+Every option can also be set with an environment variable (used by `docker-compose.yml`): `SYMBOL`, `CHECK_INTERVAL`, `FAST_WINDOW_HOURS`, `SLOW_CHECK_INTERVAL`, `DATA_DIR`, `EMAIL_FREQUENCY`. The old `--window` / `MONITORING_WINDOW` setting is ignored.
 
 ### Configuration
 
@@ -62,7 +65,7 @@ pip install -r requirements-dev.txt
 python -m pytest
 ```
 
-The tests use fake data and a fake mail server, so they don't touch StockCharts or send email. They cover parsing, colour rules, the state file, one email per flip (including a replay with several flips), retrying failed emails, the stale-data warning and the SMTP timeout.
+The tests use fake data and a fake mail server, so they don't touch StockCharts or send email. They cover parsing, colour rules, the state file, one email per flip (including a replay with several flips), retrying failed emails, the stale-data warning, the SMTP timeout, and the check schedule (weekends, US holidays, late data, and both countries' daylight-saving changes).
 
 ---
 
