@@ -9,7 +9,7 @@ How it works:
   - New NYSI data appears soon after the US market closes (16:00 New York
     time, which is 06:00-08:00 in Melbourne depending on daylight saving).
   - From each US close it checks every --interval seconds (default 2 minutes)
-    for --window-hours (default 3). Once the new day's data is in, it sleeps
+    for --window-hours (default 4). Once the new day's data is in, it sleeps
     until the next trading day's close.
   - If the data hasn't appeared by the end of the window (US holiday,
     StockCharts running late) it checks every --slow-interval (default
@@ -474,9 +474,9 @@ def parse_args():
     parser.add_argument("--interval", type=int, default=int(os.getenv("CHECK_INTERVAL", "120")),
                         help="Seconds between checks while waiting for new data after the US close "
                              "(default: 120, or CHECK_INTERVAL env var)")
-    parser.add_argument("--window-hours", type=float, default=float(os.getenv("FAST_WINDOW_HOURS", "3")),
+    parser.add_argument("--window-hours", type=float, default=float(os.getenv("FAST_WINDOW_HOURS", "4")),
                         help="How long after the US close to keep checking every --interval "
-                             "(default: 3, or FAST_WINDOW_HOURS env var)")
+                             "(default: 4, or FAST_WINDOW_HOURS env var)")
     parser.add_argument("--slow-interval", type=int, default=int(os.getenv("SLOW_CHECK_INTERVAL", "3600")),
                         help="Seconds between checks when data is late, after the window "
                              "(default: 3600, or SLOW_CHECK_INTERVAL env var)")
