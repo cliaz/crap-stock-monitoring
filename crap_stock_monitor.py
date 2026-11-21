@@ -45,7 +45,7 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 
 STOCKCHARTS_URL = "https://stockcharts.com/c-sc/sc"
 USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/117.0.0.0 Safari/537.36"
-DAYS_TO_FETCH = 20            # calendar days; plenty to find the last real move
+DAYS_TO_FETCH = 60            # calendar days (~40 trading days): enough for the last move and the streak
 HTTP_TIMEOUT_SECONDS = 15
 
 SMTP_HOST = "smtp.gmail.com"
@@ -160,6 +160,32 @@ def colour_history(data):
     return [(data[i], colour_at(data, i)) for i in range(1, len(data))]
 
 
+def daily_change(data):
+    """How much the newest value moved since the trading day before it, or None."""
+    if len(data) < 2:
+        return None
+    return data[-1].value - data[-2].value
+
+
+def colour_streak(data):
+    """
+    How many trading days in a row the newest colour has lasted, counting the
+    newest day. Returns (days, complete). `complete` is False when the streak
+    runs right back to the start of the downloaded data, so it may be longer.
+    """
+    history = colour_history(data)
+    if not history:
+        return 0, False
+
+    newest_colour = history[-1][1]
+    days = 0
+    for _, colour in reversed(history):
+        if colour != newest_colour:
+            return days, True
+        days += 1
+    return days, False
+
+
 # ---------------------------------------------------------------------------
 # State file
 # ---------------------------------------------------------------------------
@@ -261,8 +287,25 @@ def load_mailer(config_path=SCRIPT_DIR / "email_details.py"):
     return Mailer(sender, password, getattr(config, "recipients", []))
 
 
-def build_email(kind, symbol, point=None, old_colour=None, new_colour=None, last_seen=None):
-    """Return (subject, html) for an email. `kind` is 'colour_change', 'daily' or 'stale'."""
+def format_change(change):
+    """'+12.34', '-5.00', or '0.00' for no change."""
+    if change == 0:
+        return "0.00"
+    return f"{change:+.2f}"
+
+
+def format_streak(days, complete):
+    """'4 days', '2+ days', '1 day', '1+ day'."""
+    plus = "" if complete else "+"
+    unit = "day" if days == 1 else "days"
+    return f"{days}{plus} {unit}"
+
+
+def build_email(kind, symbol, data=None, old_colour=None, new_colour=None, last_seen=None):
+    """
+    Return (subject, html) for an email. `kind` is 'colour_change', 'daily' or
+    'stale'. For the first two, `data` is the downloaded series (newest last).
+    """
     now = datetime.now().strftime("%Y-%m-%d %H:%M")
 
     if kind == "stale":
@@ -273,23 +316,35 @@ def build_email(kind, symbol, point=None, old_colour=None, new_colour=None, last
             f"Check the container logs.</p>"
         )
     else:
+        latest = data[-1]
+        previous = data[-2]
+        change = format_change(daily_change(data))
         changed = old_colour != new_colour
-        if kind == "colour_change":
-            subject = f"{symbol} Alert: colour changed from {old_colour} to {new_colour}"
+        value_and_change = f"{latest.value:.2f} ({change})"
+
+        if changed and kind == "colour_change":
+            subject = f"{symbol} Alert: {old_colour} → {new_colour}, {value_and_change}"
         elif changed:
-            subject = f"{symbol} Daily Update: {new_colour} (changed from {old_colour} to {new_colour})"
+            subject = f"{symbol} Daily Update: {old_colour} → {new_colour}, {value_and_change}"
         else:
-            subject = f"{symbol} Daily Update: {new_colour} (no change)"
+            subject = f"{symbol} Daily Update: {new_colour} {value_and_change}"
+
+        change_line = f"{change} since {previous.day.isoformat()}"
+        if change == "0.00":
+            change_line += f" (flat, colour stays {new_colour})"
 
         if changed:
-            colour_line = f"<p><strong>Change:</strong> {old_colour} &rarr; {new_colour}</p>"
+            previous_days, previous_complete = colour_streak(data[:-1])
+            previous_run = format_streak(previous_days, previous_complete)
+            colour_line = f"{old_colour} &rarr; {new_colour}, after {previous_run} {old_colour}"
         else:
-            colour_line = f"<p><strong>Colour:</strong> {new_colour} (unchanged)</p>"
+            days, complete = colour_streak(data)
+            colour_line = f"{new_colour} for {format_streak(days, complete)} in a row"
 
         body = (
-            f"{colour_line}"
-            f"<p><strong>{symbol} value:</strong> {point.value}</p>"
-            f"<p><strong>Trading day:</strong> {point.day.isoformat()}</p>"
+            f"<p><strong>{symbol} value:</strong> {latest.value:.2f} on {latest.day.isoformat()}</p>"
+            f"<p><strong>Change:</strong> {change_line}</p>"
+            f"<p><strong>Colour:</strong> {colour_line}</p>"
         )
 
     html = (
@@ -388,7 +443,7 @@ def run_once(state_path, symbol, email_frequency, mailer, fetch=fetch_indicator,
             kind = "colour_change"
         else:
             kind = "daily"
-        subject, html = build_email(kind, symbol, latest, old_colour, colour)
+        subject, html = build_email(kind, symbol, data, old_colour, colour)
         if not try_send(mailer, subject, html):
             log("State not updated, so the email will be retried on the next check")
             return

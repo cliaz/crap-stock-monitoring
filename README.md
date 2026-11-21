@@ -18,6 +18,7 @@ Watches the NYSE McClellan Summation Index (NYSI) on StockCharts and emails you 
 - If the data hasn't appeared by the end of that window (a US holiday, or StockCharts running late) it checks every `--slow-interval` (default hourly) until it does, and is quick again from the next close.
 - A day is **Black** if NYSI rose from the day before, **Red** if it fell. On a flat day it keeps the direction of the last real move (Red if there hasn't been one yet).
 - If the colour differs from the last one it saw, it emails you. With `--email-frequency daily` it emails every new trading day instead, and says whether the colour changed.
+- Every email shows the NYSI value, the change since the previous trading day, and the streak: how many trading days in a row it's been this colour (or, on a flip, how long the previous colour lasted). It downloads about 40 trading days, so longer streaks show as e.g. "40+ days". The subject line carries the value and change too, e.g. `NYSI Daily Update: Red -551.66 (-88.55)` or `NYSI Alert: Black → Red, -264.54 (-6.50)`.
 - It remembers the last trading day and colour in `data/NYSI_state.json`, so restarts don't send duplicates. The first run just saves a starting point.
 - If an email fails to send, the state isn't updated, so the same alert is retried on the next check.
 - If no new data arrives for more than 5 days (StockCharts down, endpoint changed, etc.) it sends one warning email, and re-arms once data comes back.

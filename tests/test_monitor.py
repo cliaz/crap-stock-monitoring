@@ -202,7 +202,7 @@ def test_flip_sends_exactly_one_email(tmp_path):
     run(tmp_path, FLIP_TO_RED, mailer, today=TUESDAY)
     run(tmp_path, FLIP_TO_RED, mailer, today=TUESDAY)   # same data polled again
     assert len(mailer.sent) == 1
-    assert "Black to Red" in mailer.sent[0]
+    assert mailer.sent[0] == "NYSI Alert: Black → Red, 1.00 (-2.00)"
 
 
 def test_no_flip_sends_nothing_in_colour_change_mode(tmp_path):
@@ -219,14 +219,14 @@ def test_daily_mode_emails_once_per_new_trading_day(tmp_path):
     run(tmp_path, STAYS_BLACK, mailer, frequency="daily", today=TUESDAY)
     run(tmp_path, STAYS_BLACK, mailer, frequency="daily", today=TUESDAY)
     assert len(mailer.sent) == 1
-    assert "Daily" in mailer.sent[0]
+    assert mailer.sent[0] == "NYSI Daily Update: Black 4.00 (+1.00)"
 
 
 def test_daily_mode_says_when_it_flipped(tmp_path):
     mailer = FakeMailer()
     run(tmp_path, FRIDAY_DATA, mailer, frequency="daily")
     run(tmp_path, FLIP_TO_RED, mailer, frequency="daily", today=TUESDAY)
-    assert "Black to Red" in mailer.sent[0]
+    assert mailer.sent[0] == "NYSI Daily Update: Black → Red, 1.00 (-2.00)"
 
 
 def test_failed_email_is_retried_on_the_next_check(tmp_path):
@@ -310,10 +310,10 @@ def test_replay_emails_once_per_flip(tmp_path):
         run(tmp_path, visible, mailer, today=today)
         run(tmp_path, visible, mailer, today=today)   # every day is polled more than once
     assert mailer.sent == [
-        "NYSI Alert: colour changed from Black to Red",
-        "NYSI Alert: colour changed from Red to Black",
-        "NYSI Alert: colour changed from Black to Red",
-        "NYSI Alert: colour changed from Red to Black",
+        "NYSI Alert: Black → Red, 14.00 (-1.00)",
+        "NYSI Alert: Red → Black, 16.00 (+3.00)",
+        "NYSI Alert: Black → Red, 17.00 (-1.00)",
+        "NYSI Alert: Red → Black, 19.00 (+2.00)",
     ]
 
 
@@ -445,3 +445,76 @@ def test_never_schedules_in_the_past():
     now = utc("2026-11-23 21:00")   # exactly at the close
     assert next_check(now, date(2026, 11, 20)) > now
 
+
+
+# ---------------------------------------------------------------------------
+# Daily change and streak
+# ---------------------------------------------------------------------------
+
+WEEK = points(
+    ("2026-11-10", 100.0),
+    ("2026-11-11", 110.0),   # Black
+    ("2026-11-12", 105.0),   # Red
+    ("2026-11-13", 101.5),   # Red
+    ("2026-11-16", 101.5),   # flat, stays Red
+    ("2026-11-17", 90.25),   # Red
+)
+
+
+def test_daily_change_is_latest_minus_previous_trading_day():
+    assert csm.daily_change(WEEK) == pytest.approx(90.25 - 101.5)
+
+
+def test_daily_change_on_a_flat_day_is_zero():
+    assert csm.daily_change(WEEK[:5]) == 0
+
+
+def test_daily_change_needs_two_days():
+    assert csm.daily_change(WEEK[:1]) is None
+
+
+def test_streak_counts_consecutive_days_of_the_latest_colour():
+    # 12, 13, 16 (flat, carried Red) and 17 Nov are all Red.
+    assert csm.colour_streak(WEEK) == (4, True)
+
+
+def test_streak_is_open_ended_when_it_fills_the_whole_download():
+    rising = points(("2026-11-16", 1.0), ("2026-11-17", 2.0), ("2026-11-18", 3.0))
+    assert csm.colour_streak(rising) == (2, False)   # shown as "2+ days"
+
+
+def test_previous_streak_is_the_run_before_a_flip():
+    flip = WEEK[:3]   # Black on the 11th, then Red on the 12th
+    assert csm.colour_streak(flip[:-1]) == (1, False)
+
+
+def build(kind, data, old_colour, new_colour):
+    return csm.build_email(kind, "NYSI", data=data, old_colour=old_colour, new_colour=new_colour)
+
+
+def test_daily_email_shows_value_change_and_streak():
+    subject, html = build("daily", WEEK, "Red", "Red")
+    assert subject == "NYSI Daily Update: Red 90.25 (-11.25)"
+    assert "90.25" in html
+    assert "-11.25 since 2026-11-16" in html
+    assert "Red for 4 days in a row" in html
+
+
+def test_flip_email_says_how_long_the_previous_run_was():
+    data = WEEK[:3]
+    subject, html = build("colour_change", data, "Black", "Red")
+    assert subject == "NYSI Alert: Black → Red, 105.00 (-5.00)"
+    assert "Black &rarr; Red" in html
+    assert "after 1+ day Black" in html
+
+
+def test_flat_day_email_says_the_colour_stays():
+    subject, html = build("daily", WEEK[:5], "Red", "Red")
+    assert subject == "NYSI Daily Update: Red 101.50 (0.00)"
+    assert "0.00 since 2026-11-13 (flat, colour stays Red)" in html
+
+
+def test_open_ended_streak_is_shown_with_a_plus():
+    rising = points(("2026-11-16", 1.0), ("2026-11-17", 2.0), ("2026-11-18", 3.0))
+    _, html = build("daily", rising, "Black", "Black")
+    assert "Black for 2+ days in a row" in html
