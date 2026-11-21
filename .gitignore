@@ -17,3 +17,6 @@ direnv_rebuild.log
 # Editor / OS / tooling
 .DS_Store
 .claude/
+
+# Real email credentials (copy email_details.example.py and fill in)
+email_details.py

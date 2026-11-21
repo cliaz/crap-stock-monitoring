@@ -8,7 +8,6 @@ RUN pip install --no-cache-dir -r requirements-monitor.txt
 
 # Copy the application code
 COPY crap_stock_monitor.py .
-COPY email_details.py .
 
 # Create directory for persistent storage
 RUN mkdir -p /app/data

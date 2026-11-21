@@ -1,0 +1,18 @@
+# Never bake credentials into the image; mount email_details.py at runtime
+email_details.py
+
+# Local state and outputs
+data/
+*_state.json
+*_state.json.old
+*_trading_sim_*
+*_exposure_sim_*
+
+# Python / tooling
+__pycache__/
+*.pyc
+.git/
+.direnv/
+.envrc
+direnv_rebuild.log
+.DS_Store

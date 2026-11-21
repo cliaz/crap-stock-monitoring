@@ -53,13 +53,20 @@ python crap_stock_monitor.py --history
 
 ### Configuration
 
-Create `email_details.py`:
+Email credentials live in `email_details.py`, which is gitignored and dockerignored so it can never be committed or baked into the image. Copy the example and fill it in:
+
+```bash
+cp email_details.example.py email_details.py
+```
 
 ```python
 sender_email = "your.email@gmail.com"
-sender_password_password = "your-app-password"  # Gmail app password  
+sender_password_password = "your-app-password"  # Gmail app password
 recipients = ["recipient@example.com"]
 ```
+
+- **Running locally**: keep `email_details.py` next to `crap_stock_monitor.py` and run from the repo folder.
+- **Running in Docker**: the image ships without it. Mount it into the container (see `docker-compose.yml`), e.g. `/dockers/crap-stock-monitoring/email_details.py:/app/email_details.py`. Without the mount, email notifications are disabled.
 
 <details>
 <summary>Logic Flow Diagram</summary>
