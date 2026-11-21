@@ -9,102 +9,60 @@ This repository contains two main Python tools for stock market analysis:
 
 ## Crap Stock Monitor
 
-A Python script that monitors the NYSE McClellan Summation Index (NYSI) and sends email alerts when the trend changes from "Red" (declining) to "Black" (rising) or vice versa. Uses direct API calls to StockCharts for reliable data access. Maintains a rolling history of the last 10 days of trading data for analysis.
+Watches the NYSE McClellan Summation Index (NYSI) on StockCharts and emails you when it flips between **Red** (falling) and **Black** (rising).
+
+### How it works
+
+- Every `--interval` seconds (default 15 minutes) it downloads the last few weeks of NYSI values. It checks all day; it only does anything when a new trading day appears, so there's no time window or time zone to configure.
+- A day is **Black** if NYSI rose from the day before, **Red** if it fell. On a flat day it keeps the direction of the last real move (Red if there hasn't been one yet).
+- If the colour differs from the last one it saw, it emails you. With `--email-frequency daily` it emails every new trading day instead, and says whether the colour changed.
+- It remembers the last trading day and colour in `data/NYSI_state.json`, so restarts don't send duplicates. The first run just saves a starting point.
+- If an email fails to send, the state isn't updated, so the same alert is retried on the next check.
+- If no new data arrives for more than 5 days (StockCharts down, endpoint changed, etc.) it sends one warning email, and re-arms once data comes back.
 
 ### Installation
 
 ```bash
 pip install -r requirements-monitor.txt
-python crap_stock_monitor.py --check  # Test run
+cp email_details.example.py email_details.py   # then fill it in
+python crap_stock_monitor.py --check           # one check, then exit
 ```
-
-### Requirements
-
-**Environment:**
-
-- Python 3.6+
-- Internet connection
-
-**Libraries:**
-
-- `requests` (for API calls)
-- Built-in: `smtplib`, `email`, `json`, `datetime`, `argparse`
-
-**Configuration:**
-
-- Requires `email_details.py` for email notifications
-- Creates `NYSI_state.json` to track state between runs
 
 ### Usage
 
 ```bash
-# Single check and exit
-python crap_stock_monitor.py --check
-
-# Continuous monitoring with custom interval and window
-python crap_stock_monitor.py --interval 60 --window 09:30-16:00
-
-# Validate email credentials only
-python crap_stock_monitor.py --validate-email
-
-# Display trading history (last 10 days)
-python crap_stock_monitor.py --history
+python crap_stock_monitor.py                     # keep watching (every 15 min)
+python crap_stock_monitor.py --interval 600      # check every 10 min
+python crap_stock_monitor.py --email-frequency daily
+python crap_stock_monitor.py --check             # one check and exit
+python crap_stock_monitor.py --history           # recent days and their colours
+python crap_stock_monitor.py --validate-email    # check the email login works
+python crap_stock_monitor.py --test-email        # send a test email
 ```
+
+Every option can also be set with an environment variable (used by `docker-compose.yml`): `SYMBOL`, `CHECK_INTERVAL`, `DATA_DIR`, `EMAIL_FREQUENCY`. The old `--window` / `MONITORING_WINDOW` setting is ignored.
 
 ### Configuration
 
 Email credentials live in `email_details.py`, which is gitignored and dockerignored so it can never be committed or baked into the image. Copy the example and fill it in:
 
-```bash
-cp email_details.example.py email_details.py
-```
-
 ```python
 sender_email = "your.email@gmail.com"
 sender_password_password = "your-app-password"  # Gmail app password
-recipients = ["recipient@example.com"]
+recipients = ["recipient@example.com"]          # empty list = send to yourself
 ```
 
-- **Running locally**: keep `email_details.py` next to `crap_stock_monitor.py` and run from the repo folder.
+- **Running locally**: keep `email_details.py` next to `crap_stock_monitor.py`. It's found there whichever folder you run from.
 - **Running in Docker**: the image ships without it. Mount it into the container (see `docker-compose.yml`), e.g. `/dockers/crap-stock-monitoring/email_details.py:/app/email_details.py`. Without the mount, email notifications are disabled.
 
-<details>
-<summary>Logic Flow Diagram</summary>
+### Tests
 
-```mermaid
-graph TD
-    A[Start Script] --> B[Load Configuration]
-    B --> C{Validate Email?}
-    C -->|Yes| D[Test SMTP Connection]
-    D --> E{Valid Credentials?}
-    E -->|No| F[Show Warning]
-    E -->|Yes| G[Continue]
-    F --> G
-    C -->|No| G
-    G --> H[Fetch NYSI Data from API]
-    H --> I{Data Retrieved?}
-    I -->|No| J[Log Error & Exit]
-    I -->|Yes| K[Calculate Current Color]
-    K --> L[Load Previous State]
-    L --> M{Color Changed?}
-    M -->|No| N[Log No Change]
-    M -->|Yes| O[Send Email Alert]
-    O --> P[Update State File]
-    N --> Q{Continuous Mode?}
-    P --> Q
-    Q -->|No| R[Exit]
-    Q -->|Yes| S{In Monitoring Window?}
-    S -->|No| T[Wait Until Window]
-    S -->|Yes| U{Data Already Today?}
-    U -->|Yes| V[Wait Until Tomorrow]
-    U -->|No| W[Wait Interval]
-    T --> H
-    V --> H
-    W --> H
-    J --> R
+```bash
+pip install -r requirements-dev.txt
+python -m pytest
 ```
 
-</details>
+The tests use fake data and a fake mail server, so they don't touch StockCharts or send email. They cover parsing, colour rules, the state file, one email per flip (including a replay with several flips), retrying failed emails, the stale-data warning and the SMTP timeout.
 
 ---
 

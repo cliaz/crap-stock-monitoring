@@ -16,3 +16,8 @@ __pycache__/
 .envrc
 direnv_rebuild.log
 .DS_Store
+
+# Tests and dev tooling
+tests/
+pytest.ini
+requirements-dev.txt

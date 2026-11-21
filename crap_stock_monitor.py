@@ -1,754 +1,479 @@
 #!/usr/bin/env python3
 """
 Crap Stock Monitor
-Queries Stockcharts API directly to determine Red/Black status and sends email on color changes.
+
+Watches the NYSI (NYSE McClellan Summation Index) on StockCharts and emails you
+when it flips between Red (falling) and Black (rising).
+
+How it works:
+  - Every --interval seconds it downloads the last few weeks of NYSI values.
+  - When a new trading day appears, it works out that day's colour.
+  - If the colour differs from the last one it saw, it sends an email.
+  - It remembers the last day and colour in a small state file, so a restart
+    doesn't send duplicate alerts.
+  - If no new data turns up for several days (StockCharts down, endpoint
+    changed, etc.) it sends one warning email so a silent failure gets noticed.
 """
 
-import requests
-import smtplib
+import argparse
+import importlib.util
 import json
 import math
-from datetime import datetime, timedelta, time as dt_time, date
-from email.mime.text import MIMEText
-from email.mime.multipart import MIMEMultipart
-import time
-import argparse
 import os
+import smtplib
+import sys
+import time
+from dataclasses import dataclass, asdict
+from datetime import date, datetime
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
+from pathlib import Path
+
+import requests
 
 
-class CrapStockMonitor:
-    def __init__(self, symbol="$NYSI", data_dir=None, email_frequency="colour_change"):
-        self.symbol = symbol
-        # Use ./data by default if no data_dir specified
-        if data_dir is None:
-            self.data_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
-        else:
-            self.data_dir = data_dir
-        
-        # Create data directory if it doesn't exist
-        os.makedirs(self.data_dir, exist_ok=True)
-        
-        self.state_file = os.path.join(self.data_dir, f"{symbol}_state.json")
-        self.user_agent = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/117.0.0.0 Safari/537.36'
-        
-        # Email frequency: 'colour_change' (on color change), 'daily' (once per day), 'new_data' (on new data)
-        self.email_frequency = email_frequency.lower()
-        if self.email_frequency not in ['colour_change', 'daily', 'new_data']:
-            print(f"WARNING: Invalid email frequency '{email_frequency}', defaulting to 'colour_change'")
-            self.email_frequency = 'colour_change'
+SCRIPT_DIR = Path(__file__).resolve().parent
 
-    # Fetch recent NYSI data from StockCharts API
-    def get_nysi_data(self, days=5):
-        
-        # Add $ prefix for the API call
-        api_symbol = f"${self.symbol}"
-        url = f'https://stockcharts.com/c-sc/sc?s={api_symbol}&p=D&yr=0&mn=0&dy={days}&i=t3757734781c&img=text&inspector=yes'
-        
+STOCKCHARTS_URL = "https://stockcharts.com/c-sc/sc"
+USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/117.0.0.0 Safari/537.36"
+DAYS_TO_FETCH = 20            # calendar days; plenty to find the last real move
+HTTP_TIMEOUT_SECONDS = 15
+
+SMTP_HOST = "smtp.gmail.com"
+SMTP_PORT = 587
+SMTP_TIMEOUT_SECONDS = 30
+
+# US data for Friday arrives on Saturday morning in Australia, so a normal
+# weekend means 3 days without new data, a long weekend 4-5. Six or more
+# days means something is wrong.
+STALE_AFTER_DAYS = 5
+
+EMAIL_FREQUENCIES = ["colour_change", "daily"]
+BLACK = "Black"   # NYSI went up
+RED = "Red"       # NYSI went down
+
+
+def log(message):
+    print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] {message}", flush=True)
+
+
+# ---------------------------------------------------------------------------
+# Fetching and parsing data
+# ---------------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class DataPoint:
+    day: date
+    value: float
+
+
+def normalise_symbol(symbol):
+    """'$nysi', ' NYSI ' and 'NYSI' all become 'NYSI'."""
+    return symbol.strip().lstrip("$").upper()
+
+
+def build_stockcharts_url(symbol, days):
+    symbol = normalise_symbol(symbol)
+    return f"{STOCKCHARTS_URL}?s=${symbol}&p=D&yr=0&mn=0&dy={days}&i=t3757734781c&img=text&inspector=yes"
+
+
+def parse_stockcharts(text):
+    """
+    Turn a StockCharts text response into a date-sorted list of DataPoints.
+
+    The useful part looks like:
+        <pricedata>83 202509180930 202509181600 631.29 0|218 202509190930 ...</pricedata>
+    Each '|'-separated row is: index, start time, end time, value, volume.
+    """
+    if "<pricedata>" not in text:
+        raise ValueError("StockCharts response has no <pricedata> block")
+
+    body = text.split("<pricedata>", 1)[1]
+    body = body.split("</pricedata>", 1)[0]
+
+    result = []
+    for row in body.split("|"):
+        columns = row.strip().split(" ")
+        if len(columns) < 4:
+            continue
         try:
-            response = requests.get(url, headers={'user-agent': self.user_agent}, timeout=15)
-            response.raise_for_status()
-            
-            # Extract data between <pricedata> tags
-            text = response.text
-            if '<pricedata>' not in text:
-                print("ERROR: No price data found in response")
-                return None
-                
-            # Find the start and end of pricedata section
-            start = text.find('<pricedata>') + len('<pricedata>')
-            end = text.find('</pricedata>', start)
-            if end == -1:
-                # If there's no closing tag, take everything to the end
-                data_section = text[start:]
-            else:
-                data_section = text[start:end]
-            
-            # Parse the data, which is pipe-separated lines
-            # eg <pricedata>83 202509180930 202509181600 631.29 0|218 202509190930 202509191600 620.74 0</pricedata>
-            lines = data_section.split('|')
-            nysi_values = []
-            
-            for line in lines:
-                cols = line.strip().split(' ')
-                if len(cols) < 4:
-                    continue
-                    
-                try:
-                    date_str = cols[1]
-                    date = datetime(int(date_str[0:4]), int(date_str[4:6]), int(date_str[6:8]))
-                    value = float(cols[3])
-                    
-                    if not math.isnan(value):
-                        nysi_values.append({
-                            'date': date.strftime('%Y-%m-%d'),
-                            'value': value
-                        })
-                except (ValueError, IndexError):
-                    continue
-            
-            # Sort by date to ensure chronological order
-            nysi_values.sort(key=lambda x: x['date'])
-            return nysi_values
-            
-        except requests.exceptions.RequestException as e:
-            print(f"ERROR: Error fetching NYSI data: {e}")
-            return None
+            day = datetime.strptime(columns[1][:8], "%Y%m%d").date()
+            value = float(columns[3])
+        except ValueError:
+            continue
+        if math.isnan(value):
+            continue
+        result.append(DataPoint(day, value))
 
-    # Determine if NYSI is Red or Black based on latest trend
-    def determine_color(self, nysi_values):
-        
-        if len(nysi_values) < 2:
-            return None
-            
-        # Get the two most recent values
-        latest = nysi_values[-1]['value']
-        previous = nysi_values[-2]['value']
-        
-        if latest > previous:
-            return "Black"  # Going up = Black
-        elif latest < previous:
-            return "Red"    # Going down = Red
-        else:
-            # If same value (rare if not impossible), look further back to determine trend
-            for i in range(len(nysi_values) - 2, 0, -1):
-                if nysi_values[i]['value'] != nysi_values[i-1]['value']:
-                    if nysi_values[i]['value'] > nysi_values[i-1]['value']:
-                        return "Black"
-                    else:
-                        return "Red"
-            return None  # All values are the same
+    result.sort(key=lambda point: point.day)
+    return result
 
-    # Load the last known state from the state file
-    def load_last_state(self):
-        
-        if os.path.exists(self.state_file):
-            try:
-                with open(self.state_file, 'r') as f:
-                    state = json.load(f)
-                    
-                    # Handle new format with history
-                    if 'history' in state and state['history']:
-                        # Get the most recent entry
-                        latest = max(state['history'], key=lambda x: x['date'])
-                        return latest['color'], latest['date'], latest['value']
-                    
-                    # Handle old format for backward compatibility
-                    elif 'last_color' in state:
-                        return state.get('last_color'), state.get('last_date'), state.get('last_value')
-                        
-            except (json.JSONDecodeError, IOError):
-                pass
-        return None, None, None
 
-    # Helper method to clean up history and keep only last 10 days
-    def _clean_history(self, history):
-    
-        from datetime import datetime, timedelta
-        
-        if not history:
-            return []
-            
-        # Sort by date (newest first) and remove duplicates by date
-        seen_dates = set()
-        cleaned = []
-        
-        for entry in sorted(history, key=lambda x: x['date'], reverse=True):
-            if entry['date'] not in seen_dates:
-                seen_dates.add(entry['date'])
-                cleaned.append(entry)
-                
-        # Keep only last 10 entries
-        return cleaned[:10]
+def fetch_indicator(symbol, days):
+    """Download and parse the last `days` days of an indicator. Raises on failure."""
+    url = build_stockcharts_url(symbol, days)
+    response = requests.get(url, headers={"user-agent": USER_AGENT}, timeout=HTTP_TIMEOUT_SECONDS)
+    response.raise_for_status()
+    return parse_stockcharts(response.text)
 
-    # Build initial history from historical data
-    def _build_initial_history(self, historical_data):
-        """Build initial history from multiple days of historical NYSI data"""
-        if len(historical_data) < 2:
-            return
-            
-        # Process each day starting from the second entry (need pairs to determine color)
-        for i in range(1, len(historical_data)):
-            current_data = historical_data[i]
-            previous_data = historical_data[i-1]
-            
-            date = current_data['date']
-            value = current_data['value']
-            
-            # Determine color based on trend from previous day
-            if value > previous_data['value']:
-                color = "Black"  # Going up
-            else:
-                color = "Red"    # Going down
-                
-            # Save each day to build up history (but don't print each one)
-            self.save_state(color, date, value)
 
-    # Save the current state to the state file
-    def save_state(self, color, date, value):
-        
-        # Load existing state to preserve history
-        existing_history = []
-        if os.path.exists(self.state_file):
-            try:
-                with open(self.state_file, 'r') as f:
-                    existing_state = json.load(f)
-                    if 'history' in existing_state:
-                        existing_history = existing_state['history']
-                    elif 'last_color' in existing_state:
-                        # Migrate old format to new format
-                        existing_history = [{
-                            'color': existing_state['last_color'],
-                            'date': existing_state['last_date'],
-                            'value': existing_state['last_value']
-                        }]
-            except (json.JSONDecodeError, IOError):
-                existing_history = []
+# ---------------------------------------------------------------------------
+# Working out the colour
+# ---------------------------------------------------------------------------
 
-        # Add new entry to history
-        new_entry = {
-            'color': color,
-            'date': date,
-            'value': value,
-            'timestamp': datetime.now().isoformat()
-        }
-        existing_history.append(new_entry)
-        
-        # Clean up history to keep only last 10 days
-        cleaned_history = self._clean_history(existing_history)
-        
-        # Create new state format
-        state = {
-            'history': cleaned_history,
-            'last_color': color,  # Keep for backward compatibility
-            'last_date': date,
-            'last_value': value,
-            'updated': datetime.now().isoformat()
-        }
-        
-        try:
-            with open(self.state_file, 'w') as f:
-                json.dump(state, f, indent=2)
-        except IOError as e:
-            print(f"WARNING: Could not save state: {e}")
+def colour_at(data, index):
+    """
+    Colour of the day at `index`: Black if it rose from the day before, Red if
+    it fell. On a flat day, keep the direction of the most recent real move.
+    If there has been no move at all yet, default to Red.
+    """
+    for i in range(index, 0, -1):
+        today_value = data[i].value
+        previous_value = data[i - 1].value
+        if today_value > previous_value:
+            return BLACK
+        if today_value < previous_value:
+            return RED
+    return RED
 
-    # Display the trading history
-    def display_history(self):
-        """Display the last 10 days of trading data"""
-        if os.path.exists(self.state_file):
-            try:
-                with open(self.state_file, 'r') as f:
-                    state = json.load(f)
-                    if 'history' in state and state['history']:
-                        print("\nTrading History (Last 10 Days):")
-                        print("-" * 50)
-                        for entry in sorted(state['history'], key=lambda x: x['date']):
-                            print(f"{entry['date']}: {entry['value']} = {entry['color']}")
-                        print("-" * 50)
-                    else:
-                        print("No trading history available")
-            except (json.JSONDecodeError, IOError):
-                print("Could not read trading history")
 
-    # Send a test email
-    def send_test_email(self):
-        if not os.path.exists("email_details.py"):
-            print("ERROR: email_details.py not found")
-            return False
+def latest_colour(data):
+    if len(data) < 2:
+        return None
+    return colour_at(data, len(data) - 1)
 
-        try:
-            from email_details import sender_email, sender_password_password, recipients
-            
-            if not recipients:
-                recipients = [sender_email]
-            
-            msg = MIMEText(f"Test email from Crap Stock Monitor at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-            msg['Subject'] = 'NYSI Monitor Test'
-            msg['From'] = sender_email
-            msg['To'] = ", ".join(recipients)
-            
-            server = smtplib.SMTP('smtp.gmail.com', 587)
-            server.starttls()
-            server.login(sender_email, sender_password_password)
-            server.send_message(msg)
-            server.quit()
-            
-            print(f"Test email sent to {', '.join(recipients)}")
-            return True
-            
-        except Exception as e:
-            print(f"ERROR: {e}")
-            return False
 
-    # Validate email credentials without sending an email
-    def validate_email_credentials(self):
-    
-        if not os.path.exists("email_details.py"):
-            print("WARNING: Email validation failed: email_details.py not found")
-            return False
+def colour_history(data):
+    """List of (DataPoint, colour) for every day that has a day before it."""
+    return [(data[i], colour_at(data, i)) for i in range(1, len(data))]
 
-        try:
-            from email_details import sender_email, sender_password_password, recipients
-            
-            if not sender_email or not sender_password_password:
-                print("WARNING: Email validation failed: Missing email credentials")
-                return False
-                
-            print("Validating email credentials...")
-            
-            # Test connection and authentication
-            server = smtplib.SMTP('smtp.gmail.com', 587)
-            server.starttls()
-            server.login(sender_email, sender_password_password)
-            server.quit()
-            
-            print("Email credentials validated successfully")
-            return True
-            
-        except smtplib.SMTPAuthenticationError as e:
-            print(f"ERROR: Email authentication failed - Invalid credentials: {e}")
-            return False
-        except smtplib.SMTPException as e:
-            print(f"ERROR: Email validation failed - SMTP error: {e}")
-            return False
-        except Exception as e:
-            print(f"ERROR: Email validation failed: {e}")
-            return False
 
-    # Send email notification about color change. see email_details.py for config
-    def send_email(self, old_color, new_color, nysi_value, date, reason="change"):
-      
-        if not os.path.exists("email_details.py"):
-            print("WARNING: Email notifications disabled: email_details.py not found")
-            return False
+# ---------------------------------------------------------------------------
+# State file
+# ---------------------------------------------------------------------------
 
-        try:
-            from email_details import sender_email, sender_password_password, recipients
-            
-            if not sender_email or not sender_password_password:
-                print("WARNING: Email notification skipped: Missing email credentials")
-                return False
-                
-            if not recipients:
-                recipients = [sender_email]
-            
-            # Create email
-            if reason == "colour_change":
-                subject = f"NYSI Alert: Color Changed from {old_color} to {new_color}"
-                change_text = f"<p><strong>Change:</strong> {old_color} → {new_color}</p>"
-                alert_type = "Color Change Alert"
-            elif reason == "daily":
-                subject = f"NYSI Daily Update: {new_color}"
-                change_text = f"<p><strong>Current Color:</strong> {new_color}</p>"
-                alert_type = "Daily Update"
-            else:  # new_data
-                subject = f"NYSI Update: {new_color}"
-                change_text = f"<p><strong>Current Color:</strong> {new_color}</p>"
-                alert_type = "Status Update"
-            
-            msg = MIMEMultipart()
-            msg['From'] = sender_email
-            msg['To'] = ", ".join(recipients)
-            msg['Subject'] = subject
-            
-            # Create email body
-            html = f"""
-            <html>
-            <body>
-                <h2>NYSI {alert_type}</h2>
-                <p><strong>Time:</strong> {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</p>
-                <p><strong>Symbol:</strong> {self.symbol}</p>
-                {change_text}
-                <p><strong>Current NYSI Value:</strong> {nysi_value}</p>
-                <p><strong>Data Date:</strong> {date}</p>
-                <br>
-                <p>This is an automated alert from your Crap Stock Monitor.</p>
-            </body>
-            </html>
-            """
-            
-            msg.attach(MIMEText(html, 'html'))
-            
-            # Send email
-            server = smtplib.SMTP('smtp.gmail.com', 587)
-            server.starttls()
-            server.login(sender_email, sender_password_password)
-            server.send_message(msg)
-            server.quit()
-            
-            print(f"Email notification sent to {', '.join(recipients)}")
-            return True
-            
-        except Exception as e:
-            print(f"ERROR: Failed to send email: {e}")
-            return False
+@dataclass
+class State:
+    last_date: str = None         # 'YYYY-MM-DD' of the last trading day processed
+    last_colour: str = None
+    last_value: float = None
+    stale_alert_sent: bool = False
 
-    # Check NYSI status once and send email if changed
-    def check_once(self):
 
-        print(f"Checking NYSI status at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-        
-        # Check if we have existing state/history
-        has_existing_state = os.path.exists(self.state_file)
-        
-        if not has_existing_state:
-            print("No existing state file found - fetching 11 days of historical data to build history...")
-            # Get historical data to populate initial history. Need history + 1 day to determine the first
-            # color. 11 days of data gives us 10 days of red/black history.
-            nysi_data = self.get_nysi_data(11)
-        else:
-            # Get recent NYSI data for normal operation
-            nysi_data = self.get_nysi_data()
-            
-        if not nysi_data:
-            print("ERROR: Could not fetch NYSI data")
-            return False
-            
-        # If we're initializing history, process all historical data first
-        if not has_existing_state and len(nysi_data) > 1:
-            print(f"Building initial history from {len(nysi_data)} days of data...")
-            self._build_initial_history(nysi_data)
-            print("Initial history built successfully")
-            
-        # Determine current color
-        current_color = self.determine_color(nysi_data)
-        if not current_color:
-            print("ERROR: Could not determine NYSI color")
-            return False
-            
-        latest_data = nysi_data[-1]
-        current_date = latest_data['date']
-        current_value = latest_data['value']
-        
-        print(f"Current NYSI: {current_value} ({current_date}) = {current_color}")
-        
-        # Display trading history
-        self.display_history()
-        
-        # Load last known state
-        last_color, last_date, last_value = self.load_last_state()
-        
-        if last_color:
-            print(f"Previous state: {last_value} ({last_date}) = {last_color}")
-            
-            color_changed = current_color != last_color
-            date_changed = current_date != last_date
-            
-            # Determine if we should send an email based on email_frequency setting
-            should_send_email = False
-            email_reason = "colour_change"
-            
-            if self.email_frequency == "colour_change":
-                # Only send on color change
-                if color_changed:
-                    should_send_email = True
-                    email_reason = "colour_change"
-                    print(f"Color change detected: {last_color} -> {current_color}")
-                else:
-                    print("No color change detected")
-            elif self.email_frequency == "daily":
-                # Send once per day (when we get new data for a new date)
-                if date_changed:
-                    should_send_email = True
-                    email_reason = "daily"
-                    if color_changed:
-                        print(f"Daily update: Color changed {last_color} -> {current_color}")
-                    else:
-                        print(f"Daily update: Color remains {current_color}")
-                else:
-                    print("No new daily data")
-            elif self.email_frequency == "new_data":
-                # Send on any new data
-                if date_changed:
-                    should_send_email = True
-                    email_reason = "new_data"
-                    if color_changed:
-                        print(f"New data: Color changed {last_color} -> {current_color}")
-                    else:
-                        print(f"New data: Color remains {current_color}")
-                else:
-                    print("No new data")
-            
-            if should_send_email:
-                # Send email notification
-                email_sent = self.send_email(last_color, current_color, current_value, current_date, reason=email_reason)
-                
-                if email_sent:
-                    print("Notification sent successfully")
-                else:
-                    print("WARNING: Notification failed to send")
-            
-            # Save new state
-            self.save_state(current_color, current_date, current_value)
-            return True
-        else:
-            print("No previous state found - initializing")
-            self.save_state(current_color, current_date, current_value)
-            print("Initial state saved")
-            return True
+def load_state(path):
+    """Read the state file. A missing or unreadable file gives an empty State."""
+    path = Path(path)
+    if not path.exists():
+        return State()
 
-    # Check if current time is within the monitoring window
-    def is_within_monitoring_window(self, start_time, end_time):
-
-        if start_time is None or end_time is None:
-            return True  # No window specified, always monitor
-            
-        now = datetime.now().time()
-        
-        # Handle cases where window crosses midnight
-        if start_time <= end_time:
-            # Normal case: 09:00 - 17:00
-            return start_time <= now <= end_time
-        else:
-            # Crosses midnight: 23:00 - 06:00
-            return now >= start_time or now <= end_time
-
-    # Calculate seconds until the next monitoring window starts
-    def calculate_time_until_next_window(self, start_time, end_time):
-        
-        if start_time is None or end_time is None:
-            return 0  # No window specified
-            
-        now = datetime.now()
-        current_time = now.time()
-        today = now.date()
-        
-        # Create datetime objects for window start today and tomorrow
-        window_start_today = datetime.combine(today, start_time)
-        window_start_tomorrow = datetime.combine(today + timedelta(days=1), start_time)
-        
-        if start_time <= end_time:
-            # Normal window (doesn't cross midnight)
-            if current_time < start_time:
-                # Window hasn't started today
-                return int((window_start_today - now).total_seconds())
-            else:
-                # Window already passed today, wait for tomorrow
-                return int((window_start_tomorrow - now).total_seconds())
-        else:
-            # Window crosses midnight
-            if current_time >= start_time:
-                # We're in the late part of today's window, next window starts tomorrow
-                return int((window_start_tomorrow - now).total_seconds())
-            elif current_time <= end_time:
-                # We're in the early part of today's window (after midnight), next window starts today
-                return int((window_start_today - now).total_seconds())
-            else:
-                # We're between windows, next window starts today
-                return int((window_start_today - now).total_seconds())
-
-    # Check if we have data for today's date
-    def has_received_data_today(self, nysi_data):
-        
-        if not nysi_data:
-            return False
-            
-        today = date.today().strftime('%Y-%m-%d')
-        latest_data_date = nysi_data[-1]['date']
-        
-        return latest_data_date == today
-
-    # Main monitoring loop
-    def monitor(self, check_interval=300, monitoring_window=None):  # 5 minutes default
-        
-        print(f"Starting Crap Stock Monitor for {self.symbol}")
-        print(f"Check interval: {check_interval} seconds")
-        
-        if monitoring_window:
-            start_time, end_time = monitoring_window
-            print(f"Monitoring window: {start_time.strftime('%H:%M')} - {end_time.strftime('%H:%M')}")
-        else:
-            print("Monitoring continuously (no time window)")
-            
-        print("Press Ctrl+C to stop monitoring")
-        
-        # Initialize history if no state file exists
-        if not os.path.exists(self.state_file):
-            print("No existing state file found - initializing history...")
-            try:
-                # Perform initial check to build history
-                success = self.check_once()
-                if success:
-                    print("History initialized successfully")
-                else:
-                    print("WARNING: Failed to initialize history")
-            except Exception as e:
-                print(f"WARNING: Error during history initialization: {e}")
-        
-        # Track if we were in the monitoring window in the previous iteration
-        was_in_window = False
-        data_received_today = False
-        
-        try:
-            while True:
-                # Check if we're within the monitoring window
-                start_time, end_time = monitoring_window if monitoring_window else (None, None)
-                in_window = self.is_within_monitoring_window(start_time, end_time)
-                
-                # Reset data_received_today flag at the start of each new day
-                current_date = date.today()
-                if hasattr(self, '_last_check_date') and self._last_check_date != current_date:
-                    data_received_today = False
-                self._last_check_date = current_date
-                
-                # Log entering the monitoring window
-                if in_window and not was_in_window and monitoring_window:
-                    current_time = datetime.now().strftime('%H:%M:%S')
-                    print(f"[{current_time}] Entering monitoring window")
-                
-                # Log exiting the monitoring window
-                if not in_window and was_in_window and monitoring_window:
-                    current_time = datetime.now().strftime('%H:%M:%S')
-                    print(f"[{current_time}] Exiting monitoring window")
-                
-                # Update window state for next iteration
-                was_in_window = in_window
-                
-                if in_window and not data_received_today:
-                    # We're in the monitoring window and haven't received data today
-                    nysi_data = self.get_nysi_data()
-                    if nysi_data and self.has_received_data_today(nysi_data):
-                        print("New data received for today - processing...")
-                        self.check_once()
-                        data_received_today = True
-                        print("Data processed. No more checks needed today.")
-                    else:
-                        print("No new data available yet. Will check again in next interval.")
-                        print(f"Waiting {check_interval} seconds until next check...\n")
-                        time.sleep(check_interval)
-                        continue
-                elif in_window and data_received_today:
-                    # We're in window but already processed today's data
-                    print("Today's data already processed. Waiting until tomorrow...")
-                    # Calculate wait time until next day's window starts
-                    wait_seconds = self.calculate_time_until_next_window(start_time, end_time)
-                    if wait_seconds > 0:
-                        hours = wait_seconds // 3600
-                        minutes = (wait_seconds % 3600) // 60
-                        print(f"Sleeping for {hours}h {minutes}m until next monitoring window")
-                        time.sleep(wait_seconds)
-                        continue
-                elif not in_window and monitoring_window:
-                    # Outside monitoring window - calculate wait time until next window
-                    current_time = datetime.now().strftime('%H:%M:%S')
-                    window_str = f"{start_time.strftime('%H:%M')} - {end_time.strftime('%H:%M')}"
-                    print(f"[{current_time}] Outside monitoring window ({window_str})")
-                    
-                    wait_seconds = self.calculate_time_until_next_window(start_time, end_time)
-                    if wait_seconds > 0:
-                        hours = wait_seconds // 3600
-                        minutes = (wait_seconds % 3600) // 60
-                        print(f"Sleeping for {hours}h {minutes}m until next monitoring window")
-                        time.sleep(wait_seconds)
-                        continue
-                else:
-                    # No monitoring window specified, check normally
-                    self.check_once()
-                    print(f"Waiting {check_interval} seconds until next check...\n")
-                
-                time.sleep(check_interval)
-                
-        except KeyboardInterrupt:
-            print("\nMonitoring stopped by user")
-            print("Crap Stock Monitor stopped")
-
-def parse_time(time_str):
-    """Parse time string in HH:MM format"""
     try:
-        hour, minute = map(int, time_str.split(':'))
-        if not (0 <= hour <= 23 and 0 <= minute <= 59):
-            raise ValueError("Invalid time range")
-        return dt_time(hour, minute)
-    except ValueError:
-        raise argparse.ArgumentTypeError(f"Invalid time format: {time_str}. Use HH:MM format (e.g., 09:30)")
+        saved = json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError) as error:
+        log(f"WARNING: could not read state file {path}: {error}. Starting fresh.")
+        return State()
+
+    # 'last_color' is the spelling used by v2.5 and earlier.
+    return State(
+        last_date=saved.get("last_date"),
+        last_colour=saved.get("last_colour") or saved.get("last_color"),
+        last_value=saved.get("last_value"),
+        stale_alert_sent=saved.get("stale_alert_sent", False),
+    )
+
+
+def save_state(path, state):
+    """Write the state file. Writes to a temp file first so a crash can't leave half a file."""
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    contents = asdict(state)
+    contents["updated"] = datetime.now().isoformat(timespec="seconds")
+
+    temp_path = path.with_suffix(".tmp")
+    temp_path.write_text(json.dumps(contents, indent=2))
+    os.replace(temp_path, path)
+
+
+# ---------------------------------------------------------------------------
+# Email
+# ---------------------------------------------------------------------------
+
+class Mailer:
+    def __init__(self, sender, password, recipients):
+        self.sender = sender
+        self.password = password
+        self.recipients = list(recipients) if recipients else [sender]
+
+    def _connect(self):
+        server = smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=SMTP_TIMEOUT_SECONDS)
+        return server
+
+    def validate(self):
+        """Log in to the mail server without sending anything. Raises on failure."""
+        with self._connect() as server:
+            server.starttls()
+            server.login(self.sender, self.password)
+
+    def send(self, subject, html):
+        """Send an HTML email to all recipients. Raises on failure."""
+        message = MIMEMultipart()
+        message["From"] = self.sender
+        message["To"] = ", ".join(self.recipients)
+        message["Subject"] = subject
+        message.attach(MIMEText(html, "html"))
+
+        with self._connect() as server:
+            server.starttls()
+            server.login(self.sender, self.password)
+            server.send_message(message)
+
+
+def load_mailer(config_path=SCRIPT_DIR / "email_details.py"):
+    """
+    Build a Mailer from email_details.py, or return None if there isn't one.
+    The file is looked up next to this script, not in the current folder.
+    """
+    config_path = Path(config_path)
+    if not config_path.exists():
+        return None
+
+    spec = importlib.util.spec_from_file_location("email_details", config_path)
+    config = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(config)
+
+    sender = getattr(config, "sender_email", None)
+    password = getattr(config, "sender_password_password", None)
+    if not sender or not password:
+        log(f"WARNING: {config_path} is missing sender_email or sender_password_password")
+        return None
+
+    return Mailer(sender, password, getattr(config, "recipients", []))
+
+
+def build_email(kind, symbol, point=None, old_colour=None, new_colour=None, last_seen=None):
+    """Return (subject, html) for an email. `kind` is 'colour_change', 'daily' or 'stale'."""
+    now = datetime.now().strftime("%Y-%m-%d %H:%M")
+
+    if kind == "stale":
+        subject = f"{symbol} Monitor: No new data since {last_seen}"
+        body = (
+            f"<p>The monitor has not seen any new {symbol} data since <strong>{last_seen}</strong>.</p>"
+            f"<p>StockCharts may be down, or the data endpoint may have changed. "
+            f"Check the container logs.</p>"
+        )
+    else:
+        changed = old_colour != new_colour
+        if kind == "colour_change":
+            subject = f"{symbol} Alert: colour changed from {old_colour} to {new_colour}"
+        elif changed:
+            subject = f"{symbol} Daily Update: {new_colour} (changed from {old_colour} to {new_colour})"
+        else:
+            subject = f"{symbol} Daily Update: {new_colour} (no change)"
+
+        if changed:
+            colour_line = f"<p><strong>Change:</strong> {old_colour} &rarr; {new_colour}</p>"
+        else:
+            colour_line = f"<p><strong>Colour:</strong> {new_colour} (unchanged)</p>"
+
+        body = (
+            f"{colour_line}"
+            f"<p><strong>{symbol} value:</strong> {point.value}</p>"
+            f"<p><strong>Trading day:</strong> {point.day.isoformat()}</p>"
+        )
+
+    html = (
+        f"<html><body>"
+        f"<h2>{subject}</h2>"
+        f"{body}"
+        f"<p><small>Sent {now} by Crap Stock Monitor.</small></p>"
+        f"</body></html>"
+    )
+    return subject, html
+
+
+# ---------------------------------------------------------------------------
+# One check
+# ---------------------------------------------------------------------------
+
+def is_stale(last_data_day, today):
+    return (today - last_data_day).days > STALE_AFTER_DAYS
+
+
+def try_send(mailer, subject, html):
+    """Send an email. Returns True if sent, or if email isn't configured (nothing to retry)."""
+    if mailer is None:
+        log(f"Email not configured, would have sent: {subject}")
+        return True
+    try:
+        mailer.send(subject, html)
+        log(f"Email sent: {subject}")
+        return True
+    except Exception as error:
+        log(f"ERROR: failed to send email '{subject}': {error}")
+        return False
+
+
+def check_for_stale_data(state, last_data_day, mailer, symbol, today):
+    """Send one warning when data stops arriving. Returns True if the state changed."""
+    if last_data_day is None or state.stale_alert_sent:
+        return False
+    if not is_stale(last_data_day, today):
+        return False
+
+    subject, html = build_email("stale", symbol, last_seen=last_data_day.isoformat())
+    if try_send(mailer, subject, html):
+        state.stale_alert_sent = True
+        return True
+    return False
+
+
+def run_once(state_path, symbol, email_frequency, mailer, fetch=fetch_indicator, today=None):
+    """
+    Do one check: fetch data, and if there's a new trading day, update the
+    state and send whatever email is due. The state only moves forward once
+    the email has been sent, so a failed email is retried on the next check.
+    """
+    today = today or date.today()
+    symbol = normalise_symbol(symbol)
+    state = load_state(state_path)
+    saved_day = date.fromisoformat(state.last_date) if state.last_date else None
+
+    try:
+        data = fetch(symbol, DAYS_TO_FETCH)
+    except Exception as error:
+        log(f"ERROR: could not fetch {symbol} data: {error}")
+        if check_for_stale_data(state, saved_day, mailer, symbol, today):
+            save_state(state_path, state)
+        return
+
+    colour = latest_colour(data)
+    if colour is None:
+        log(f"WARNING: not enough {symbol} data to work out a colour ({len(data)} rows)")
+        return
+
+    latest = data[-1]
+
+    # First ever run: remember where we are, don't email.
+    if state.last_date is None:
+        log(f"First run: {symbol} {latest.value} on {latest.day} is {colour}. Saved as the starting point.")
+        save_state(state_path, State(latest.day.isoformat(), colour, latest.value))
+        return
+
+    # Nothing new yet.
+    if latest.day <= saved_day:
+        log(f"No new data yet (latest is {latest.day}, {state.last_colour})")
+        if check_for_stale_data(state, latest.day, mailer, symbol, today):
+            save_state(state_path, state)
+        return
+
+    # A new trading day.
+    old_colour = state.last_colour
+    changed = colour != old_colour
+    log(f"New data: {symbol} {latest.value} on {latest.day} is {colour} (was {old_colour})")
+
+    email_due = changed or email_frequency == "daily"
+    if email_due:
+        if changed and email_frequency == "colour_change":
+            kind = "colour_change"
+        else:
+            kind = "daily"
+        subject, html = build_email(kind, symbol, latest, old_colour, colour)
+        if not try_send(mailer, subject, html):
+            log("State not updated, so the email will be retried on the next check")
+            return
+
+    save_state(state_path, State(latest.day.isoformat(), colour, latest.value, stale_alert_sent=False))
+
+
+# ---------------------------------------------------------------------------
+# Command line
+# ---------------------------------------------------------------------------
+
+def show_history(symbol):
+    data = fetch_indicator(symbol, DAYS_TO_FETCH)
+    print(f"\n{symbol} colours for the last {DAYS_TO_FETCH} days:")
+    print("-" * 40)
+    for point, colour in colour_history(data):
+        print(f"{point.day}  {point.value:>10}  {colour}")
+    print("-" * 40)
+
+
+def parse_args():
+    parser = argparse.ArgumentParser(description="Email an alert when the NYSI flips between Red and Black.")
+    parser.add_argument("--symbol", default=os.getenv("SYMBOL", "NYSI"),
+                        help="StockCharts symbol, with or without '$' (default: NYSI, or SYMBOL env var)")
+    parser.add_argument("--interval", type=int, default=int(os.getenv("CHECK_INTERVAL", "900")),
+                        help="Seconds between checks (default: 900, or CHECK_INTERVAL env var)")
+    parser.add_argument("--data-dir", default=os.getenv("DATA_DIR") or str(SCRIPT_DIR / "data"),
+                        help="Folder for the state file (default: ./data, or DATA_DIR env var)")
+    parser.add_argument("--email-frequency", default=os.getenv("EMAIL_FREQUENCY", "colour_change"),
+                        choices=EMAIL_FREQUENCIES + ["new_data"],
+                        help="colour_change: only email on a flip. daily: email every new trading day. "
+                             "(default: colour_change, or EMAIL_FREQUENCY env var; new_data is an old name for daily)")
+    parser.add_argument("--check", action="store_true", help="Run one check and exit")
+    parser.add_argument("--history", action="store_true", help="Show recent colours and exit")
+    parser.add_argument("--test-email", action="store_true", help="Send a test email and exit")
+    parser.add_argument("--validate-email", action="store_true", help="Check the email login works and exit")
+    parser.add_argument("--window", default=os.getenv("MONITORING_WINDOW"),
+                        help="No longer used: the monitor now checks all day and only acts on new data")
+    return parser.parse_args()
+
 
 def main():
-    parser = argparse.ArgumentParser(description="Crap Stock Monitor")
-    parser.add_argument("--symbol", default=os.getenv("SYMBOL", "NYSI"), 
-                        help="Stock symbol to monitor (default: NYSI or SYMBOL env var)")
-    parser.add_argument("--check", action="store_true", help="Check once and exit")
-    parser.add_argument("--test-email", action="store_true", help="Send a test email and exit")
-    parser.add_argument("--validate-email", action="store_true", help="Validate email credentials and exit")
-    parser.add_argument("--history", action="store_true", help="Display trading history and exit")
-    parser.add_argument("--interval", type=int, default=int(os.getenv("CHECK_INTERVAL", "300")), 
-                        help="Check interval in seconds (default: 300 or CHECK_INTERVAL env var)")
-    parser.add_argument("--window", type=str, metavar="START-END", 
-                        default=os.getenv("MONITORING_WINDOW"),
-                        help="Monitoring window (format: HH:MM-HH:MM, e.g., 09:30-16:00 or MONITORING_WINDOW env var)")
-    parser.add_argument("--data-dir", type=str, default=os.getenv("DATA_DIR"), 
-                        help="Directory for data storage (default: ./data or DATA_DIR env var)")
-    parser.add_argument("--email-frequency", type=str, 
-                        default=os.getenv("EMAIL_FREQUENCY", "colour_change"),
-                        choices=["colour_change", "daily", "new_data"],
-                        help="Email notification frequency: 'colour_change' (on red/black change), 'daily' (once per day), 'new_data' (on new data) (default: colour_change or EMAIL_FREQUENCY env var)")
-    
-    args = parser.parse_args()
-    
-    # Parse monitoring window if provided
-    monitoring_window = None
-    if args.window:
-        try:
-            start_str, end_str = args.window.split('-')
-            start_time = parse_time(start_str.strip())
-            end_time = parse_time(end_str.strip())
-            monitoring_window = (start_time, end_time)
-        except ValueError:
-            print("ERROR: Invalid window format. Use HH:MM-HH:MM (e.g., 09:30-16:00)")
-            return
-    
-    monitor = CrapStockMonitor(args.symbol, data_dir=args.data_dir, email_frequency=args.email_frequency)
-    
-    print("Starting Crap Stock Monitor")
-    
-    # Handle test email mode
-    if args.test_email:
-        if os.path.exists("email_details.py"):
-            success = monitor.send_test_email()
-            print("Crap Stock Monitor stopped")
-            exit(0 if success else 1)
-        else:
-            print("ERROR: email_details.py not found")
-            print("Crap Stock Monitor stopped")
-            exit(1)
-    
-    # Handle email validation only mode
-    if args.validate_email:
-        if os.path.exists("email_details.py"):
-            success = monitor.validate_email_credentials()
-            print("Crap Stock Monitor stopped")
-            exit(0 if success else 1)
-        else:
-            print("ERROR: email_details.py not found")
-            print("Crap Stock Monitor stopped")
-            exit(1)
-    
-    # Handle history display mode
+    args = parse_args()
+    symbol = normalise_symbol(args.symbol)
+    email_frequency = "daily" if args.email_frequency == "new_data" else args.email_frequency
+    state_path = Path(args.data_dir) / f"{symbol}_state.json"
+
     if args.history:
-        monitor.display_history()
-        print("Crap Stock Monitor stopped")
-        exit(0)
-    
-    # Validate email credentials if email_details.py exists (for normal operation)
-    if os.path.exists("email_details.py"):
-        if not monitor.validate_email_credentials():
-            print("WARNING: Continuing with invalid email credentials. Notifications may fail.")
-        else:
-            # Show who will receive notifications
-            try:
-                import email_details
-                if hasattr(email_details, 'recipients') and email_details.recipients:
-                    recipients_str = ', '.join(email_details.recipients)
-                    print(f"Email notifications will be sent to: {recipients_str}")
-            except Exception as e:
-                print("Email notifications configured (recipients list not accessible)")
+        show_history(symbol)
+        return 0
+
+    mailer = load_mailer()
+
+    if args.test_email or args.validate_email:
+        if mailer is None:
+            log("ERROR: email_details.py not found next to the script")
+            return 1
+        try:
+            if args.test_email:
+                mailer.send(f"{symbol} Monitor test", "<p>Test email from Crap Stock Monitor.</p>")
+                log(f"Test email sent to {', '.join(mailer.recipients)}")
+            else:
+                mailer.validate()
+                log("Email login works")
+            return 0
+        except Exception as error:
+            log(f"ERROR: {error}")
+            return 1
+
+    if args.window:
+        log("NOTE: --window / MONITORING_WINDOW is no longer used and is ignored")
+
+    if mailer is None:
+        log("WARNING: no email_details.py found, so no emails will be sent")
     else:
-        print("INFO: No email_details.py found. Email notifications will be disabled.")
-    
+        try:
+            mailer.validate()
+            log(f"Email login works. Alerts go to: {', '.join(mailer.recipients)}")
+        except Exception as error:
+            log(f"WARNING: email login failed ({error}). Will keep trying when an email is due.")
+
     if args.check:
-        monitor.check_once()
-        print("Crap Stock Monitor stopped")
-    else:
-        monitor.monitor(args.interval, monitoring_window)
+        run_once(state_path, symbol, email_frequency, mailer)
+        return 0
+
+    log(f"Watching {symbol} every {args.interval}s, emailing on: {email_frequency}. State: {state_path}")
+    try:
+        while True:
+            try:
+                run_once(state_path, symbol, email_frequency, mailer)
+            except Exception as error:
+                log(f"ERROR: unexpected problem during check: {error}")
+            time.sleep(args.interval)
+    except KeyboardInterrupt:
+        log("Stopped")
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

@@ -15,7 +15,7 @@ RUN mkdir -p /app/data
 # Set default environment variables
 ENV TZ=Australia/Sydney
 ENV DATA_DIR=/app/data
-ENV CHECK_INTERVAL=60
+ENV CHECK_INTERVAL=900
 ENV SYMBOL=NYSI
 ENV EMAIL_FREQUENCY=colour_change
 
