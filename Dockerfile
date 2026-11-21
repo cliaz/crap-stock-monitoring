@@ -13,9 +13,12 @@ COPY email_details.py .
 # Create directory for persistent storage
 RUN mkdir -p /app/data
 
-# Set environment variable for timezone
+# Set default environment variables
 ENV TZ=Australia/Sydney
+ENV DATA_DIR=/app/data
+ENV CHECK_INTERVAL=60
+ENV SYMBOL=NYSI
+ENV EMAIL_FREQUENCY=colour_change
 
 # Run the script in continuous monitoring mode when the container starts
 ENTRYPOINT ["python", "-u", "crap_stock_monitor.py"]
-CMD ["--data-dir", "/app/data", "--interval", "60"]

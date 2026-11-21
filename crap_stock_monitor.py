@@ -17,7 +17,7 @@ import os
 
 
 class CrapStockMonitor:
-    def __init__(self, symbol="$NYSI", data_dir=None):
+    def __init__(self, symbol="$NYSI", data_dir=None, email_frequency="colour_change"):
         self.symbol = symbol
         # Use ./data by default if no data_dir specified
         if data_dir is None:
@@ -28,13 +28,21 @@ class CrapStockMonitor:
         # Create data directory if it doesn't exist
         os.makedirs(self.data_dir, exist_ok=True)
         
-        self.state_file = os.path.join(self.data_dir, f"{symbol.replace('$', '')}_state.json")
+        self.state_file = os.path.join(self.data_dir, f"{symbol}_state.json")
         self.user_agent = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/117.0.0.0 Safari/537.36'
+        
+        # Email frequency: 'colour_change' (on color change), 'daily' (once per day), 'new_data' (on new data)
+        self.email_frequency = email_frequency.lower()
+        if self.email_frequency not in ['colour_change', 'daily', 'new_data']:
+            print(f"WARNING: Invalid email frequency '{email_frequency}', defaulting to 'colour_change'")
+            self.email_frequency = 'colour_change'
 
     # Fetch recent NYSI data from StockCharts API
     def get_nysi_data(self, days=5):
         
-        url = f'https://stockcharts.com/c-sc/sc?s={self.symbol}&p=D&yr=0&mn=0&dy={days}&i=t3757734781c&img=text&inspector=yes'
+        # Add $ prefix for the API call
+        api_symbol = f"${self.symbol}"
+        url = f'https://stockcharts.com/c-sc/sc?s={api_symbol}&p=D&yr=0&mn=0&dy={days}&i=t3757734781c&img=text&inspector=yes'
         
         try:
             response = requests.get(url, headers={'user-agent': self.user_agent}, timeout=15)
@@ -307,7 +315,7 @@ class CrapStockMonitor:
             return False
 
     # Send email notification about color change. see email_details.py for config
-    def send_email(self, old_color, new_color, nysi_value, date):
+    def send_email(self, old_color, new_color, nysi_value, date, reason="change"):
       
         if not os.path.exists("email_details.py"):
             print("WARNING: Email notifications disabled: email_details.py not found")
@@ -324,7 +332,18 @@ class CrapStockMonitor:
                 recipients = [sender_email]
             
             # Create email
-            subject = f"NYSI Alert: Color Changed from {old_color} to {new_color}"
+            if reason == "colour_change":
+                subject = f"NYSI Alert: Color Changed from {old_color} to {new_color}"
+                change_text = f"<p><strong>Change:</strong> {old_color} → {new_color}</p>"
+                alert_type = "Color Change Alert"
+            elif reason == "daily":
+                subject = f"NYSI Daily Update: {new_color}"
+                change_text = f"<p><strong>Current Color:</strong> {new_color}</p>"
+                alert_type = "Daily Update"
+            else:  # new_data
+                subject = f"NYSI Update: {new_color}"
+                change_text = f"<p><strong>Current Color:</strong> {new_color}</p>"
+                alert_type = "Status Update"
             
             msg = MIMEMultipart()
             msg['From'] = sender_email
@@ -335,10 +354,10 @@ class CrapStockMonitor:
             html = f"""
             <html>
             <body>
-                <h2>NYSI Color Change Alert</h2>
+                <h2>NYSI {alert_type}</h2>
                 <p><strong>Time:</strong> {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</p>
                 <p><strong>Symbol:</strong> {self.symbol}</p>
-                <p><strong>Change:</strong> {old_color} → {new_color}</p>
+                {change_text}
                 <p><strong>Current NYSI Value:</strong> {nysi_value}</p>
                 <p><strong>Data Date:</strong> {date}</p>
                 <br>
@@ -411,26 +430,56 @@ class CrapStockMonitor:
         if last_color:
             print(f"Previous state: {last_value} ({last_date}) = {last_color}")
             
-            if current_color != last_color:
-                print(f"Color change detected: {last_color} -> {current_color}")
-                
+            color_changed = current_color != last_color
+            date_changed = current_date != last_date
+            
+            # Determine if we should send an email based on email_frequency setting
+            should_send_email = False
+            email_reason = "colour_change"
+            
+            if self.email_frequency == "colour_change":
+                # Only send on color change
+                if color_changed:
+                    should_send_email = True
+                    email_reason = "colour_change"
+                    print(f"Color change detected: {last_color} -> {current_color}")
+                else:
+                    print("No color change detected")
+            elif self.email_frequency == "daily":
+                # Send once per day (when we get new data for a new date)
+                if date_changed:
+                    should_send_email = True
+                    email_reason = "daily"
+                    if color_changed:
+                        print(f"Daily update: Color changed {last_color} -> {current_color}")
+                    else:
+                        print(f"Daily update: Color remains {current_color}")
+                else:
+                    print("No new daily data")
+            elif self.email_frequency == "new_data":
+                # Send on any new data
+                if date_changed:
+                    should_send_email = True
+                    email_reason = "new_data"
+                    if color_changed:
+                        print(f"New data: Color changed {last_color} -> {current_color}")
+                    else:
+                        print(f"New data: Color remains {current_color}")
+                else:
+                    print("No new data")
+            
+            if should_send_email:
                 # Send email notification
-                email_sent = self.send_email(last_color, current_color, current_value, current_date)
-                
-                # Save new state
-                self.save_state(current_color, current_date, current_value)
+                email_sent = self.send_email(last_color, current_color, current_value, current_date, reason=email_reason)
                 
                 if email_sent:
                     print("Notification sent successfully")
                 else:
                     print("WARNING: Notification failed to send")
-                    
-                return True
-            else:
-                print("No color change detected")
-                # Update state with latest data even if color hasn't changed
-                self.save_state(current_color, current_date, current_value)
-                return True
+            
+            # Save new state
+            self.save_state(current_color, current_date, current_value)
+            return True
         else:
             print("No previous state found - initializing")
             self.save_state(current_color, current_date, current_value)
@@ -614,16 +663,23 @@ def parse_time(time_str):
 
 def main():
     parser = argparse.ArgumentParser(description="Crap Stock Monitor")
-    parser.add_argument("--symbol", default="$NYSI", help="Stock symbol to monitor (default: $NYSI)")
+    parser.add_argument("--symbol", default=os.getenv("SYMBOL", "NYSI"), 
+                        help="Stock symbol to monitor (default: NYSI or SYMBOL env var)")
     parser.add_argument("--check", action="store_true", help="Check once and exit")
     parser.add_argument("--test-email", action="store_true", help="Send a test email and exit")
     parser.add_argument("--validate-email", action="store_true", help="Validate email credentials and exit")
     parser.add_argument("--history", action="store_true", help="Display trading history and exit")
-    parser.add_argument("--interval", type=int, default=300, help="Check interval in seconds (default: 300)")
+    parser.add_argument("--interval", type=int, default=int(os.getenv("CHECK_INTERVAL", "300")), 
+                        help="Check interval in seconds (default: 300 or CHECK_INTERVAL env var)")
     parser.add_argument("--window", type=str, metavar="START-END", 
-                        help="Monitoring window (format: HH:MM-HH:MM, e.g., 09:30-16:00)")
-    parser.add_argument("--data-dir", type=str, default=None, 
-                        help="Directory for data storage (default: ./data)")
+                        default=os.getenv("MONITORING_WINDOW"),
+                        help="Monitoring window (format: HH:MM-HH:MM, e.g., 09:30-16:00 or MONITORING_WINDOW env var)")
+    parser.add_argument("--data-dir", type=str, default=os.getenv("DATA_DIR"), 
+                        help="Directory for data storage (default: ./data or DATA_DIR env var)")
+    parser.add_argument("--email-frequency", type=str, 
+                        default=os.getenv("EMAIL_FREQUENCY", "colour_change"),
+                        choices=["colour_change", "daily", "new_data"],
+                        help="Email notification frequency: 'colour_change' (on red/black change), 'daily' (once per day), 'new_data' (on new data) (default: colour_change or EMAIL_FREQUENCY env var)")
     
     args = parser.parse_args()
     
@@ -639,7 +695,7 @@ def main():
             print("ERROR: Invalid window format. Use HH:MM-HH:MM (e.g., 09:30-16:00)")
             return
     
-    monitor = CrapStockMonitor(args.symbol, data_dir=args.data_dir)
+    monitor = CrapStockMonitor(args.symbol, data_dir=args.data_dir, email_frequency=args.email_frequency)
     
     print("Starting Crap Stock Monitor")
     

@@ -9,5 +9,16 @@ services:
       - /dockers/crap-stock-monitoring/email_details.py:/app/email_details.py
       - /dockers/crap-stock-monitoring/data:/app/data
     environment:
-      - TZ=Australia/Sydney
-    command: ["--data-dir", "/app/data", "--interval", "120", "--window", "07:30-10:00"]
+      TZ: Australia/Sydney
+      DATA_DIR: /app/data
+      CHECK_INTERVAL: 120
+      MONITORING_WINDOW: 07:30-10:00
+      SYMBOL: NYSI
+      EMAIL_FREQUENCY: daily  # Options: colour_change, daily, new_data
+      # the above are the equivalent to running the script with:
+      # command: ["--symbol", "NYSI", "--interval", "120", "--window", "07:30-10:00", "--data-dir", "/app/data"]
+    # For one-time actions, override the command:
+    # command: ["--test-email"]           # Send a test email
+    # command: ["--check"]                # Check once and exit
+    # command: ["--validate-email"]       # Validate email credentials
+    # command: ["--history"]              # Display trading history
