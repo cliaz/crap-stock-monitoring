@@ -3,7 +3,8 @@
 Crap Stock Monitor
 
 Watches the NYSI (NYSE McClellan Summation Index) on StockCharts and emails you
-when it flips between Red (falling) and Black (rising).
+when it flips between Red (falling) and Black (rising). It can also post a
+short message to a Signal group through the Koda Signal relay.
 
 How it works:
   - New NYSI data appears soon after the US market closes (16:00 New York
@@ -15,7 +16,9 @@ How it works:
     StockCharts running late) it checks every --slow-interval (default
     hourly) until it does, and is quick again at the next close.
   - When a new trading day appears, it works out that day's colour.
-  - If the colour differs from the last one it saw, it sends an email.
+  - If the colour differs from the last one it saw, it sends an email, and a
+    Signal message if signal_details.py is set up. Signal is best effort: if
+    the relay doesn't answer within 10 seconds it logs the failure and moves on.
   - It remembers the last day and colour in a small state file, so a restart
     doesn't send duplicate alerts.
   - If no new data turns up for several days (StockCharts down, endpoint
@@ -23,10 +26,13 @@ How it works:
 """
 
 import argparse
+import hashlib
+import hmac
 import importlib.util
 import json
 import math
 import os
+import secrets
 import smtplib
 import sys
 import time
@@ -52,6 +58,8 @@ SMTP_HOST = "smtp.gmail.com"
 SMTP_PORT = 587
 SMTP_TIMEOUT_SECONDS = 30
 
+SIGNAL_TIMEOUT_SECONDS = 10
+
 # US data for Friday arrives on Saturday morning in Australia, so a normal
 # weekend means 3 days without new data, a long weekend 4-5. Six or more
 # days means something is wrong.
@@ -60,7 +68,7 @@ STALE_AFTER_DAYS = 5
 US_MARKET_TIMEZONE = ZoneInfo("America/New_York")
 US_MARKET_CLOSE = clock_time(16, 0)
 
-EMAIL_FREQUENCIES = ["colour_change", "daily"]
+EMAIL_FREQUENCIES = ["colour_change", "daily"]   # also used for SIGNAL_FREQUENCY
 BLACK = "Black"   # NYSI went up
 RED = "Red"       # NYSI went down
 
@@ -287,6 +295,75 @@ def load_mailer(config_path=SCRIPT_DIR / "email_details.py"):
     return Mailer(sender, password, getattr(config, "recipients", []))
 
 
+# ---------------------------------------------------------------------------
+# Signal (through the Koda Signal relay)
+# ---------------------------------------------------------------------------
+
+class SignalRelay:
+    """
+    Posts plain-text messages to a Signal group through the Koda Signal relay.
+
+    Each request is signed with a shared secret (HMAC-SHA256 over
+    "<timestamp>.<nonce>.<body>"), so the secret itself never goes over the
+    network. The relay decides which destinations this client may post to.
+    """
+
+    def __init__(self, url, client, secret, destination, frequency):
+        self.url = url.rstrip("/")
+        self.client = client
+        self.secret = secret
+        self.destination = destination
+        self.frequency = frequency
+
+    def signed_headers(self, body, timestamp=None, nonce=None):
+        timestamp = timestamp or str(int(time.time()))
+        nonce = nonce or secrets.token_hex(12)
+        signed = f"{timestamp}.{nonce}.".encode() + body
+        signature = hmac.new(self.secret.encode(), signed, hashlib.sha256).hexdigest()
+        return {
+            "Content-Type": "application/json",
+            "X-Relay-Client": self.client,
+            "X-Relay-Timestamp": timestamp,
+            "X-Relay-Nonce": nonce,
+            "X-Relay-Signature": signature,
+        }
+
+    def send(self, text):
+        """Post `text` to the destination. Raises on failure."""
+        body = json.dumps({"to": self.destination, "message": text}).encode()
+        response = requests.post(f"{self.url}/send", data=body, headers=self.signed_headers(body),
+                                 timeout=SIGNAL_TIMEOUT_SECONDS)
+        if response.status_code != 200:
+            raise RuntimeError(f"relay answered {response.status_code}: {response.text.strip()}")
+
+
+def load_signal(destination, frequency, config_path=SCRIPT_DIR / "signal_details.py"):
+    """
+    Build a SignalRelay from signal_details.py plus the destination, or return
+    None if Signal isn't set up. Like email_details.py, the file sits next to
+    this script and holds the secret, so it's never committed or baked in.
+    """
+    config_path = Path(config_path)
+    if not config_path.exists():
+        return None
+    if not destination:
+        log(f"WARNING: {config_path} exists but SIGNAL_DESTINATION isn't set, so Signal is off")
+        return None
+
+    spec = importlib.util.spec_from_file_location("signal_details", config_path)
+    config = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(config)
+
+    url = getattr(config, "relay_url", None)
+    client = getattr(config, "client_name", None)
+    secret = getattr(config, "secret", None)
+    if not url or not client or not secret:
+        log(f"WARNING: {config_path} is missing relay_url, client_name or secret")
+        return None
+
+    return SignalRelay(url, client, secret, destination, frequency)
+
+
 def format_change(change):
     """'+12.34', '-5.00', or '0.00' for no change."""
     if change == 0:
@@ -357,6 +434,25 @@ def build_email(kind, symbol, data=None, old_colour=None, new_colour=None, last_
     return subject, html
 
 
+COLOUR_EMOJI = {BLACK: "⚫", RED: "🔴"}
+
+
+def build_signal_message(symbol, data, old_colour, new_colour):
+    """A one-line plain-text version of the alert, for Signal."""
+    latest = data[-1]
+    value_and_change = f"{latest.value:.2f} ({format_change(daily_change(data))})"
+    emoji = COLOUR_EMOJI.get(new_colour, "")
+
+    if old_colour != new_colour:
+        previous_days, previous_complete = colour_streak(data[:-1])
+        return (f"{emoji} {symbol} flipped {old_colour} → {new_colour}: {value_and_change} "
+                f"on {latest.day.isoformat()}. {old_colour} lasted {format_streak(previous_days, previous_complete)}.")
+
+    days, complete = colour_streak(data)
+    return (f"{emoji} {symbol} {new_colour} {value_and_change} on {latest.day.isoformat()}, "
+            f"{new_colour} for {format_streak(days, complete)} in a row.")
+
+
 # ---------------------------------------------------------------------------
 # One check
 # ---------------------------------------------------------------------------
@@ -379,6 +475,17 @@ def try_send(mailer, subject, html):
         return False
 
 
+def try_send_signal(signal, text):
+    """Post to Signal if it's set up. Never raises: a failure is logged and skipped."""
+    if signal is None:
+        return
+    try:
+        signal.send(text)
+        log(f"Signal message sent to {signal.destination}")
+    except Exception as error:
+        log(f"ERROR: failed to send Signal message to {signal.destination}: {error}")
+
+
 def check_for_stale_data(state, last_data_day, mailer, symbol, today):
     """Send one warning when data stops arriving. Returns True if the state changed."""
     if last_data_day is None or state.stale_alert_sent:
@@ -393,11 +500,13 @@ def check_for_stale_data(state, last_data_day, mailer, symbol, today):
     return False
 
 
-def run_once(state_path, symbol, email_frequency, mailer, fetch=fetch_indicator, today=None):
+def run_once(state_path, symbol, email_frequency, mailer, fetch=fetch_indicator, today=None, signal=None):
     """
     Do one check: fetch data, and if there's a new trading day, update the
-    state and send whatever email is due. The state only moves forward once
-    the email has been sent, so a failed email is retried on the next check.
+    state and send whatever email and Signal message are due. The state only
+    moves forward once the email has been sent, so a failed email is retried
+    on the next check. Signal is sent after the email, so a retried email
+    doesn't post to Signal twice; a failed Signal post is not retried.
     """
     today = today or date.today()
     symbol = normalise_symbol(symbol)
@@ -447,6 +556,9 @@ def run_once(state_path, symbol, email_frequency, mailer, fetch=fetch_indicator,
         if not try_send(mailer, subject, html):
             log("State not updated, so the email will be retried on the next check")
             return
+
+    if signal is not None and (changed or signal.frequency == "daily"):
+        try_send_signal(signal, build_signal_message(symbol, data, old_colour, colour))
 
     save_state(state_path, State(latest.day.isoformat(), colour, latest.value, stale_alert_sent=False))
 
@@ -541,10 +653,17 @@ def parse_args():
                         choices=EMAIL_FREQUENCIES + ["new_data"],
                         help="colour_change: only email on a flip. daily: email every new trading day. "
                              "(default: colour_change, or EMAIL_FREQUENCY env var; new_data is an old name for daily)")
+    parser.add_argument("--signal-destination", default=os.getenv("SIGNAL_DESTINATION"),
+                        help="Relay destination name for Signal messages, e.g. task-mgmt "
+                             "(default: SIGNAL_DESTINATION env var; Signal is off without it)")
+    parser.add_argument("--signal-frequency", default=os.getenv("SIGNAL_FREQUENCY", "colour_change"),
+                        choices=EMAIL_FREQUENCIES,
+                        help="colour_change or daily, as for email (default: colour_change, or SIGNAL_FREQUENCY env var)")
     parser.add_argument("--check", action="store_true", help="Run one check and exit")
     parser.add_argument("--history", action="store_true", help="Show recent colours and exit")
     parser.add_argument("--test-email", action="store_true", help="Send a test email and exit")
     parser.add_argument("--validate-email", action="store_true", help="Check the email login works and exit")
+    parser.add_argument("--test-signal", action="store_true", help="Send a test Signal message and exit")
     parser.add_argument("--window", default=os.getenv("MONITORING_WINDOW"),
                         help="No longer used: checks are now timed from the US market close")
     return parser.parse_args()
@@ -561,6 +680,19 @@ def main():
         return 0
 
     mailer = load_mailer()
+    signal = load_signal(args.signal_destination, args.signal_frequency)
+
+    if args.test_signal:
+        if signal is None:
+            log("ERROR: Signal isn't set up (needs signal_details.py and SIGNAL_DESTINATION)")
+            return 1
+        try:
+            signal.send(f"🧪 {symbol} Monitor test message")
+            log(f"Test Signal message sent to {signal.destination}")
+            return 0
+        except Exception as error:
+            log(f"ERROR: {error}")
+            return 1
 
     if args.test_email or args.validate_email:
         if mailer is None:
@@ -590,8 +722,11 @@ def main():
         except Exception as error:
             log(f"WARNING: email login failed ({error}). Will keep trying when an email is due.")
 
+    if signal is not None:
+        log(f"Signal on: posting to {signal.destination} on {signal.frequency}")
+
     if args.check:
-        run_once(state_path, symbol, email_frequency, mailer)
+        run_once(state_path, symbol, email_frequency, mailer, signal=signal)
         return 0
 
     fast_interval = timedelta(seconds=args.interval)
@@ -602,7 +737,7 @@ def main():
     try:
         while True:
             try:
-                run_once(state_path, symbol, email_frequency, mailer)
+                run_once(state_path, symbol, email_frequency, mailer, signal=signal)
             except Exception as error:
                 log(f"ERROR: unexpected problem during check: {error}")
 

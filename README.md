@@ -9,7 +9,7 @@ This repository contains two main Python tools for stock market analysis:
 
 ## Crap Stock Monitor
 
-Watches the NYSE McClellan Summation Index (NYSI) on StockCharts and emails you when it flips between **Red** (falling) and **Black** (rising).
+Watches the NYSE McClellan Summation Index (NYSI) on StockCharts and emails you when it flips between **Red** (falling) and **Black** (rising). It can also post a one-line alert to a Signal group through the Koda Signal relay.
 
 ### How it works
 
@@ -21,6 +21,7 @@ Watches the NYSE McClellan Summation Index (NYSI) on StockCharts and emails you 
 - Every email shows the NYSI value, the change since the previous trading day, and the streak: how many trading days in a row it's been this colour (or, on a flip, how long the previous colour lasted). It downloads about 40 trading days, so longer streaks show as e.g. "40+ days". The subject line carries the value and change too, e.g. `NYSI Daily Update: Red -551.66 (-88.55)` or `NYSI Alert: Black → Red, -264.54 (-6.50)`.
 - It remembers the last trading day and colour in `data/NYSI_state.json`, so restarts don't send duplicates. The first run just saves a starting point.
 - If an email fails to send, the state isn't updated, so the same alert is retried on the next check.
+- If Signal is set up, the same alert goes to Signal as one line, e.g. `🔴 NYSI flipped Black → Red: -264.54 (-6.50) on 2026-11-25. Black lasted 12 days.` `--signal-frequency` is separate from the email setting, so you can get daily emails while the group only hears about flips. Signal is best effort: it's sent after the email, has a 10-second timeout, and a failure is logged and not retried. Stale-data warnings go to email only.
 - If no new data arrives for more than 5 days (StockCharts down, endpoint changed, etc.) it sends one warning email, and re-arms once data comes back.
 
 ### Installation
@@ -41,9 +42,10 @@ python crap_stock_monitor.py --check             # one check and exit
 python crap_stock_monitor.py --history           # recent days and their colours
 python crap_stock_monitor.py --validate-email    # check the email login works
 python crap_stock_monitor.py --test-email        # send a test email
+python crap_stock_monitor.py --signal-destination task-mgmt --test-signal   # send a test Signal message
 ```
 
-Every option can also be set with an environment variable (used by `docker-compose.yml`): `SYMBOL`, `CHECK_INTERVAL`, `FAST_WINDOW_HOURS`, `SLOW_CHECK_INTERVAL`, `DATA_DIR`, `EMAIL_FREQUENCY`. The old `--window` / `MONITORING_WINDOW` setting is ignored.
+Every option can also be set with an environment variable (used by `docker-compose.yml`): `SYMBOL`, `CHECK_INTERVAL`, `FAST_WINDOW_HOURS`, `SLOW_CHECK_INTERVAL`, `DATA_DIR`, `EMAIL_FREQUENCY`, `SIGNAL_DESTINATION`, `SIGNAL_FREQUENCY`. The old `--window` / `MONITORING_WINDOW` setting is ignored.
 
 ### Configuration
 
@@ -58,6 +60,16 @@ recipients = ["recipient@example.com"]          # empty list = send to yourself
 - **Running locally**: keep `email_details.py` next to `crap_stock_monitor.py`. It's found there whichever folder you run from.
 - **Running in Docker**: the image ships without it. Mount it into the container (see `docker-compose.yml`), e.g. `/dockers/crap-stock-monitoring/email_details.py:/app/email_details.py`. Without the mount, email notifications are disabled.
 
+Signal needs two things: `signal_details.py` (also gitignored and dockerignored) with the relay address, this client's name and its shared secret, and `SIGNAL_DESTINATION` set to one of the destination names the relay allows this client to post to. Without either, Signal is off.
+
+```python
+relay_url = "http://relay-host:3046"
+client_name = "crap-stock-monitor"
+secret = "shared-secret-from-the-relay"
+```
+
+Each request is signed with HMAC-SHA256 over `<timestamp>.<nonce>.<body>`, so the secret itself never crosses the network, and the relay rejects old or repeated requests. To post somewhere else, change `SIGNAL_DESTINATION`; the relay refuses destinations this client isn't allowed.
+
 ### Tests
 
 ```bash
@@ -65,7 +77,7 @@ pip install -r requirements-dev.txt
 python -m pytest
 ```
 
-The tests use fake data and a fake mail server, so they don't touch StockCharts or send email. They cover parsing, colour rules, the state file, one email per flip (including a replay with several flips), retrying failed emails, the stale-data warning, the SMTP timeout, and the check schedule (weekends, US holidays, late data, and both countries' daylight-saving changes).
+The tests use fake data and a fake mail server, so they don't touch StockCharts or send email. They cover parsing, colour rules, the state file, one email per flip (including a replay with several flips), retrying failed emails, Signal messages (separate frequency, failures don't block, no double posts, signatures matching the relay), the stale-data warning, the SMTP timeout, and the check schedule (weekends, US holidays, late data, and both countries' daylight-saving changes).
 
 ---
 

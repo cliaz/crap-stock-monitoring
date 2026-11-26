@@ -5,6 +5,7 @@ services:
     restart: unless-stopped
     volumes:
       - /dockers/crap-stock-monitoring/email_details.py:/app/email_details.py
+      - /dockers/crap-stock-monitoring/signal_details.py:/app/signal_details.py   # optional, for Signal
       - /dockers/crap-stock-monitoring/data:/app/data
     environment:
       TZ: Australia/Sydney
@@ -14,6 +15,8 @@ services:
       SLOW_CHECK_INTERVAL: 3600  # if data is late (US holiday etc.), check this often until it arrives
       SYMBOL: NYSI
       EMAIL_FREQUENCY: daily     # colour_change = only on a Red/Black flip, daily = every new trading day
+      SIGNAL_DESTINATION: task-mgmt    # relay destination name; leave out to turn Signal off
+      SIGNAL_FREQUENCY: colour_change  # same choices as EMAIL_FREQUENCY
       # the above are the equivalent to running the script with:
       # command: ["--symbol", "NYSI", "--interval", "120", "--window-hours", "4", "--slow-interval", "3600",
       #           "--email-frequency", "daily", "--data-dir", "/app/data"]
@@ -21,4 +24,5 @@ services:
     # command: ["--test-email"]           # Send a test email
     # command: ["--check"]                # Check once and exit
     # command: ["--validate-email"]       # Validate email credentials
+    # command: ["--test-signal"]          # Send a test Signal message
     # command: ["--history"]              # Show recent Red/Black colours

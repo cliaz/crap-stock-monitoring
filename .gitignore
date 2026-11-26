@@ -21,6 +21,9 @@ direnv_rebuild.log
 # Real email credentials (copy email_details.example.py and fill in)
 email_details.py
 
+# Real Signal relay secret (copy signal_details.example.py and fill in)
+signal_details.py
+
 # Monitor state written when running locally
 data/
 *_state.json

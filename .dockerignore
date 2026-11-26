@@ -1,5 +1,6 @@
 # Never bake credentials into the image; mount email_details.py at runtime
 email_details.py
+signal_details.py
 
 # Local state and outputs
 data/

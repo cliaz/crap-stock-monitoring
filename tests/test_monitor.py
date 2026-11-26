@@ -518,3 +518,121 @@ def test_open_ended_streak_is_shown_with_a_plus():
     rising = points(("2026-11-16", 1.0), ("2026-11-17", 2.0), ("2026-11-18", 3.0))
     _, html = build("daily", rising, "Black", "Black")
     assert "Black for 2+ days in a row" in html
+
+
+# ---------------------------------------------------------------------------
+# Signal
+# ---------------------------------------------------------------------------
+
+class FakeSignal:
+    """Records Signal messages instead of posting them. Can be told to fail."""
+
+    def __init__(self, frequency="colour_change", fail=False):
+        self.destination = "task-mgmt"
+        self.frequency = frequency
+        self.fail = fail
+        self.sent = []
+
+    def send(self, text):
+        if self.fail:
+            raise OSError("relay is down")
+        self.sent.append(text)
+
+
+def run_with_signal(tmp_path, data, mailer, signal, frequency="colour_change", today=SATURDAY):
+    return csm.run_once(
+        state_path=tmp_path / "NYSI_state.json",
+        symbol="NYSI",
+        email_frequency=frequency,
+        mailer=mailer,
+        fetch=FakeFetcher(data),
+        today=today,
+        signal=signal,
+    )
+
+
+def test_signal_message_on_a_flip():
+    text = csm.build_signal_message("NYSI", FLIP_TO_RED, "Black", "Red")
+    assert text == "🔴 NYSI flipped Black → Red: 1.00 (-2.00) on 2026-11-23. Black lasted 1+ day."
+
+
+def test_signal_message_without_a_flip():
+    text = csm.build_signal_message("NYSI", STAYS_BLACK, "Black", "Black")
+    assert text == "⚫ NYSI Black 4.00 (+1.00) on 2026-11-23, Black for 2+ days in a row."
+
+
+def test_flip_posts_one_signal_message(tmp_path):
+    signal = FakeSignal()
+    run_with_signal(tmp_path, FRIDAY_DATA, FakeMailer(), signal)
+    run_with_signal(tmp_path, FLIP_TO_RED, FakeMailer(), signal, today=TUESDAY)
+    run_with_signal(tmp_path, FLIP_TO_RED, FakeMailer(), signal, today=TUESDAY)
+    assert len(signal.sent) == 1
+    assert signal.sent[0].startswith("🔴 NYSI flipped Black → Red")
+
+
+def test_signal_frequency_is_separate_from_email(tmp_path):
+    # Daily emails, but Signal only on a flip: a day without a flip posts nothing.
+    mailer, signal = FakeMailer(), FakeSignal("colour_change")
+    run_with_signal(tmp_path, FRIDAY_DATA, mailer, signal, frequency="daily")
+    run_with_signal(tmp_path, STAYS_BLACK, mailer, signal, frequency="daily", today=TUESDAY)
+    assert len(mailer.sent) == 1
+    assert signal.sent == []
+
+
+def test_daily_signal_posts_every_new_trading_day(tmp_path):
+    signal = FakeSignal("daily")
+    run_with_signal(tmp_path, FRIDAY_DATA, None, signal)
+    run_with_signal(tmp_path, STAYS_BLACK, None, signal, today=TUESDAY)
+    assert len(signal.sent) == 1
+
+
+def test_signal_failure_does_not_hold_up_the_state(tmp_path):
+    mailer = FakeMailer()
+    run_with_signal(tmp_path, FRIDAY_DATA, mailer, FakeSignal(fail=True))
+    run_with_signal(tmp_path, FLIP_TO_RED, mailer, FakeSignal(fail=True), today=TUESDAY)
+    assert len(mailer.sent) == 1
+    assert csm.load_state(tmp_path / "NYSI_state.json").last_colour == "Red"
+
+
+def test_signal_waits_for_the_email_so_a_retry_does_not_post_twice(tmp_path):
+    signal = FakeSignal()
+    run_with_signal(tmp_path, FRIDAY_DATA, FakeMailer(), signal)
+    run_with_signal(tmp_path, FLIP_TO_RED, FakeMailer(fail=True), signal, today=TUESDAY)
+    assert signal.sent == []
+    run_with_signal(tmp_path, FLIP_TO_RED, FakeMailer(), signal, today=TUESDAY)
+    assert len(signal.sent) == 1
+
+
+def test_signature_matches_the_relay():
+    # Same inputs as the Node relay's HMAC; the expected value was produced by Node.
+    relay = csm.SignalRelay("http://relay", "crap-stock-monitor", "s3cret", "task-mgmt", "colour_change")
+    headers = relay.signed_headers(b'{"to":"task-mgmt","message":"hi"}', timestamp="1700000000", nonce="abc123")
+    assert headers["X-Relay-Signature"] == "8004a4326fcfa9d984be537beb946a4174dbf5791ab4f97756f901e02aab3357"
+    assert headers["X-Relay-Client"] == "crap-stock-monitor"
+
+
+def test_signal_send_uses_a_timeout_and_raises_on_rejection(monkeypatch):
+    calls = []
+
+    class FakeResponse:
+        status_code = 403
+        text = '{"error":"destination not allowed"}'
+
+    def fake_post(url, data, headers, timeout):
+        calls.append((url, json.loads(data), timeout))
+        return FakeResponse()
+
+    monkeypatch.setattr(csm.requests, "post", fake_post)
+    relay = csm.SignalRelay("http://relay/", "crap-stock-monitor", "s3cret", "smtmc", "colour_change")
+    with pytest.raises(RuntimeError, match="403"):
+        relay.send("hello")
+    assert calls == [("http://relay/send", {"to": "smtmc", "message": "hello"}, 10)]
+
+
+def test_signal_is_off_without_details_or_destination(tmp_path):
+    assert csm.load_signal("task-mgmt", "colour_change", tmp_path / "missing.py") is None
+    details = tmp_path / "signal_details.py"
+    details.write_text('relay_url = "http://relay"\nclient_name = "c"\nsecret = "s"\n')
+    assert csm.load_signal(None, "colour_change", details) is None
+    relay = csm.load_signal("smtmc", "daily", details)
+    assert (relay.destination, relay.frequency, relay.client) == ("smtmc", "daily", "c")
