@@ -22,6 +22,7 @@ Watches the NYSE McClellan Summation Index (NYSI) on StockCharts and emails you 
 - It remembers the last trading day and colour in `data/NYSI_state.json`, so restarts don't send duplicates. The first run just saves a starting point.
 - If an email fails to send, the state isn't updated, so the same alert is retried on the next check.
 - If Signal is set up, the same alert goes to Signal as one line, e.g. `🔴 NYSI flipped Black → Red: -264.54 (-6.50) on 2026-11-25. Black lasted 12 days.` `--signal-frequency` is separate from the email setting, so you can get daily emails while the group only hears about flips. Signal is best effort: it's sent after the email, has a 10-second timeout, and a failure is logged and not retried. Stale-data warnings go to email only.
+- It keeps the whole history in `data/NYSI_history.csv` (StockCharts has real NYSI data from June 1998). Every check merges its download into that file, which picks up any late correction to recent days. The full history is downloaded on first start and again once a month. Only dates and values are stored; colours and streaks are worked out when asked.
 - If no new data arrives for more than 5 days (StockCharts down, endpoint changed, etc.) it sends one warning email, and re-arms once data comes back.
 
 ### Installation
@@ -70,6 +71,22 @@ secret = "shared-secret-from-the-relay"
 
 Each request is signed with HMAC-SHA256 over `<timestamp>.<nonce>.<body>`, so the secret itself never crosses the network, and the relay rejects old or repeated requests. To post somewhere else, change `SIGNAL_DESTINATION`; the relay refuses destinations this client isn't allowed.
 
+### History endpoint
+
+With `HTTP_PORT` set (e.g. `8095`), the monitor serves its history read-only. It only reads the history file, so questions never trigger a StockCharts download.
+
+```
+GET /health                       {"ok": true}
+GET /history                      the last 365 calendar days
+GET /history?days=90              the last 90 calendar days
+GET /history?days=all             everything since 1998
+GET /history?days=all&summary=1   leave out the per-day list
+```
+
+The response has `latest` (date, value, change, colour, streak), `window`, `days` (date, value, change and colour for each trading day in the window) and `runs`: each Red or Black streak that touches the window, with its start, end and full length in trading days. A run that began before the window keeps its full length and has `starts_before_window: true`; the current one has `ongoing: true`. So "the longest Red streak in the last year" is the largest Red `trading_days` in `/history?days=365&summary=1`. `data_starts` says where the stored data begins.
+
+There's no authentication: the data is public market data. Only publish the port on a network you trust.
+
 ### Tests
 
 ```bash
@@ -77,7 +94,7 @@ pip install -r requirements-dev.txt
 python -m pytest
 ```
 
-The tests use fake data and a fake mail server, so they don't touch StockCharts or send email. They cover parsing, colour rules, the state file, one email per flip (including a replay with several flips), retrying failed emails, Signal messages (separate frequency, failures don't block, no double posts, signatures matching the relay), the stale-data warning, the SMTP timeout, and the check schedule (weekends, US holidays, late data, and both countries' daylight-saving changes).
+The tests use fake data and a fake mail server, so they don't touch StockCharts or send email. They cover parsing, colour rules, the state file, one email per flip (including a replay with several flips), retrying failed emails, Signal messages (separate frequency, failures don't block, no double posts, signatures matching the relay), the history file (full download, monthly refresh, merging, bad rows), the history report and HTTP endpoint, the stale-data warning, the SMTP timeout, and the check schedule (weekends, US holidays, late data, and both countries' daylight-saving changes).
 
 ---
 

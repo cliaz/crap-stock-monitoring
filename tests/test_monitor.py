@@ -636,3 +636,161 @@ def test_signal_is_off_without_details_or_destination(tmp_path):
     assert csm.load_signal(None, "colour_change", details) is None
     relay = csm.load_signal("smtmc", "daily", details)
     assert (relay.destination, relay.frequency, relay.client) == ("smtmc", "daily", "c")
+
+
+# ---------------------------------------------------------------------------
+# History file and report
+# ---------------------------------------------------------------------------
+
+class DaysFetcher:
+    """Returns different data depending on how many days were asked for, and records the requests."""
+
+    def __init__(self, recent, full=None, full_error=None):
+        self.recent = recent
+        self.full = full
+        self.full_error = full_error
+        self.requests = []
+
+    def __call__(self, symbol, days):
+        self.requests.append(days)
+        if days == csm.HISTORY_FULL_DAYS:
+            if self.full_error:
+                raise self.full_error
+            return self.full
+        return self.recent
+
+
+LONG_HISTORY = points(
+    ("2026-11-02", 10.0), ("2026-11-03", 11.0), ("2026-11-04", 12.0),   # Black, Black
+    ("2026-11-05", 11.0), ("2026-11-06", 10.0), ("2026-11-09", 9.0),    # Red x3
+    ("2026-11-10", 9.0),                                                # flat, stays Red
+    ("2026-11-11", 9.5),                                                # Black
+)
+
+
+def test_history_round_trip(tmp_path):
+    path = tmp_path / "NYSI_history.csv"
+    csm.save_history(path, FRIDAY_DATA, date(2026, 11, 21))
+    loaded, full_day = csm.load_history(path)
+    assert loaded == FRIDAY_DATA
+    assert full_day == date(2026, 11, 21)
+
+
+def test_missing_history_file_is_empty(tmp_path):
+    assert csm.load_history(tmp_path / "missing.csv") == ([], None)
+
+
+def test_bad_history_rows_are_skipped(tmp_path):
+    path = tmp_path / "NYSI_history.csv"
+    path.write_text("# full download: 2026-11-21\ndate,value\n2026-11-19,2.0\nrubbish\n2026-11-20,oops\n2026-11-18,1.0\n")
+    loaded, _ = csm.load_history(path)
+    assert loaded == points(("2026-11-18", 1.0), ("2026-11-19", 2.0))
+
+
+def test_merge_prefers_the_newer_download():
+    old = points(("2026-11-19", 2.0), ("2026-11-20", 3.0))
+    new = points(("2026-11-20", 3.5), ("2026-11-23", 1.0))
+    assert csm.merge_points(old, new) == points(("2026-11-19", 2.0), ("2026-11-20", 3.5), ("2026-11-23", 1.0))
+
+
+def test_first_update_downloads_the_full_history(tmp_path):
+    path = tmp_path / "NYSI_history.csv"
+    fetcher = DaysFetcher(recent=FRIDAY_DATA, full=LONG_HISTORY)
+    csm.update_history(path, "NYSI", FRIDAY_DATA, fetcher, SATURDAY)
+    assert fetcher.requests == [csm.HISTORY_FULL_DAYS]
+    loaded, full_day = csm.load_history(path)
+    assert loaded == csm.merge_points(LONG_HISTORY, FRIDAY_DATA)
+    assert full_day == SATURDAY
+
+
+def test_later_updates_only_merge_until_a_month_has_passed(tmp_path):
+    path = tmp_path / "NYSI_history.csv"
+    fetcher = DaysFetcher(recent=FRIDAY_DATA, full=LONG_HISTORY)
+    csm.update_history(path, "NYSI", FRIDAY_DATA, fetcher, SATURDAY)
+    csm.update_history(path, "NYSI", FLIP_TO_RED, fetcher, TUESDAY)
+    assert fetcher.requests == [csm.HISTORY_FULL_DAYS]
+    assert csm.load_history(path)[0][-1] == DataPoint(date(2026, 11, 23), 1.0)
+
+    csm.update_history(path, "NYSI", FLIP_TO_RED, fetcher, SATURDAY + timedelta(days=30))
+    assert fetcher.requests == [csm.HISTORY_FULL_DAYS, csm.HISTORY_FULL_DAYS]
+
+
+def test_a_failed_full_download_still_keeps_the_recent_data(tmp_path):
+    path = tmp_path / "NYSI_history.csv"
+    fetcher = DaysFetcher(recent=FRIDAY_DATA, full_error=OSError("too big"))
+    csm.update_history(path, "NYSI", FRIDAY_DATA, fetcher, SATURDAY)
+    assert csm.load_history(path)[0] == FRIDAY_DATA
+
+
+def test_unchanged_history_is_not_rewritten(tmp_path, monkeypatch):
+    path = tmp_path / "NYSI_history.csv"
+    fetcher = DaysFetcher(recent=FRIDAY_DATA, full=FRIDAY_DATA)
+    csm.update_history(path, "NYSI", FRIDAY_DATA, fetcher, SATURDAY)
+    writes = []
+    monkeypatch.setattr(csm, "save_history", lambda *args: writes.append(args))
+    csm.update_history(path, "NYSI", FRIDAY_DATA, fetcher, SATURDAY)
+    assert writes == []
+
+
+def test_run_once_fills_the_history_file(tmp_path):
+    fetcher = DaysFetcher(recent=FRIDAY_DATA, full=LONG_HISTORY)
+    csm.run_once(tmp_path / "NYSI_state.json", "NYSI", "colour_change", None, fetch=fetcher,
+                 today=SATURDAY, history_path=tmp_path / "NYSI_history.csv")
+    assert len(csm.load_history(tmp_path / "NYSI_history.csv")[0]) == len(LONG_HISTORY) + len(FRIDAY_DATA)
+
+
+def test_report_latest_days_and_runs():
+    report = csm.build_report("NYSI", LONG_HISTORY, window_days=None)
+    assert report["data_starts"] == "2026-11-02"
+    assert report["latest"] == {"date": "2026-11-11", "value": 9.5, "change": 0.5, "colour": "Black",
+                                "streak_trading_days": 1, "streak_complete": True}
+    assert [d["colour"] for d in report["days"]] == ["Black", "Black", "Red", "Red", "Red", "Red", "Black"]
+    assert report["days"][5] == {"date": "2026-11-10", "value": 9.0, "change": 0.0, "colour": "Red"}
+    assert [(r["colour"], r["start"], r["end"], r["trading_days"]) for r in report["runs"]] == [
+        ("Black", "2026-11-03", "2026-11-04", 2),
+        ("Red", "2026-11-05", "2026-11-10", 4),
+        ("Black", "2026-11-11", "2026-11-11", 1),
+    ]
+    assert report["runs"][0]["starts_at_data_start"] is True
+    assert report["runs"][-1]["ongoing"] is True
+
+
+def test_report_window_keeps_full_length_of_a_run_that_started_earlier():
+    report = csm.build_report("NYSI", LONG_HISTORY, window_days=3)   # 2026-11-08 onwards
+    assert [d["date"] for d in report["days"]] == ["2026-11-09", "2026-11-10", "2026-11-11"]
+    red = report["runs"][0]
+    assert (red["colour"], red["trading_days"], red["starts_before_window"]) == ("Red", 4, True)
+    assert report["window"]["trading_days"] == 3
+
+
+def test_summary_report_leaves_out_the_days():
+    report = csm.build_report("NYSI", LONG_HISTORY, summary=True)
+    assert "days" not in report and report["runs"]
+
+
+def test_report_needs_two_points():
+    assert csm.build_report("NYSI", FRIDAY_DATA[:1]) is None
+
+
+def test_http_server_serves_history_and_errors(tmp_path):
+    import urllib.error
+    import urllib.request
+
+    path = tmp_path / "NYSI_history.csv"
+    server = csm.start_http_server(0, path, "NYSI")
+    base = f"http://127.0.0.1:{server.server_address[1]}"
+    try:
+        with pytest.raises(urllib.error.HTTPError) as no_data:
+            urllib.request.urlopen(f"{base}/history")
+        assert no_data.value.code == 503
+
+        csm.save_history(path, LONG_HISTORY, SATURDAY)
+        body = json.loads(urllib.request.urlopen(f"{base}/history?days=all&summary=1").read())
+        assert body["latest"]["colour"] == "Black" and "days" not in body
+
+        with pytest.raises(urllib.error.HTTPError) as bad_days:
+            urllib.request.urlopen(f"{base}/history?days=-3")
+        assert bad_days.value.code == 400
+        assert json.loads(urllib.request.urlopen(f"{base}/health").read()) == {"ok": True}
+    finally:
+        server.shutdown()

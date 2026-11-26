@@ -23,9 +23,13 @@ How it works:
     doesn't send duplicate alerts.
   - If no new data turns up for several days (StockCharts down, endpoint
     changed, etc.) it sends one warning email so a silent failure gets noticed.
+  - It keeps the whole NYSI history (StockCharts has it back to mid-1998) in
+    data/NYSI_history.csv, merging in every download, and can serve it over
+    HTTP (GET /history) so other tools can ask about past values and streaks.
 """
 
 import argparse
+import csv
 import hashlib
 import hmac
 import importlib.util
@@ -35,12 +39,15 @@ import os
 import secrets
 import smtplib
 import sys
+import threading
 import time
 from dataclasses import dataclass, asdict
 from datetime import date, datetime, time as clock_time, timedelta, timezone
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from urllib.parse import parse_qs, urlparse
 
 from zoneinfo import ZoneInfo
 
@@ -53,6 +60,10 @@ STOCKCHARTS_URL = "https://stockcharts.com/c-sc/sc"
 USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/117.0.0.0 Safari/537.36"
 DAYS_TO_FETCH = 60            # calendar days (~40 trading days): enough for the last move and the streak
 HTTP_TIMEOUT_SECONDS = 15
+
+HISTORY_FULL_DAYS = 20000          # calendar days, more than StockCharts has (real data starts mid-1998)
+HISTORY_REFRESH_DAYS = 30          # re-download everything this often, in case old values were corrected
+DEFAULT_WINDOW_DAYS = 365          # what GET /history returns unless asked for more
 
 SMTP_HOST = "smtp.gmail.com"
 SMTP_PORT = 587
@@ -237,6 +248,225 @@ def save_state(path, state):
     temp_path = path.with_suffix(".tmp")
     temp_path.write_text(json.dumps(contents, indent=2))
     os.replace(temp_path, path)
+
+
+# ---------------------------------------------------------------------------
+# History file
+# ---------------------------------------------------------------------------
+#
+# A CSV of every day's value, oldest first:
+#     # full download: 2026-11-27
+#     date,value
+#     1998-05-20,123.45
+# Only dates and values are stored. Colours and streaks are worked out when
+# asked, so a change to the colour rules never leaves stale colours behind.
+
+def load_history(path):
+    """Read the history file. Returns (points, full_download_day); ([], None) if missing or unreadable."""
+    path = Path(path)
+    if not path.exists():
+        return [], None
+
+    points = []
+    full_download_day = None
+    try:
+        with path.open(newline="") as file:
+            for row in csv.reader(file):
+                if not row or row[0] == "date":
+                    continue
+                if row[0].startswith("# full download:"):
+                    full_download_day = date.fromisoformat(row[0].split(":", 1)[1].strip())
+                    continue
+                try:
+                    points.append(DataPoint(date.fromisoformat(row[0]), float(row[1])))
+                except (ValueError, IndexError):
+                    continue
+    except (OSError, ValueError) as error:
+        log(f"WARNING: could not read history file {path}: {error}. Will download it again.")
+        return [], None
+
+    points.sort(key=lambda point: point.day)
+    return points, full_download_day
+
+
+def save_history(path, points, full_download_day):
+    """Write the history file via a temp file, so a crash can't leave half a file."""
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temp_path = path.with_suffix(".tmp")
+    with temp_path.open("w", newline="") as file:
+        writer = csv.writer(file)
+        writer.writerow([f"# full download: {full_download_day.isoformat()}"])
+        writer.writerow(["date", "value"])
+        for point in points:
+            writer.writerow([point.day.isoformat(), point.value])
+    os.replace(temp_path, path)
+
+
+def merge_points(old, new):
+    """Combine two lists of DataPoints by day. Where both have a day, `new` wins."""
+    by_day = {point.day: point for point in old}
+    by_day.update({point.day: point for point in new})
+    return [by_day[day] for day in sorted(by_day)]
+
+
+def update_history(path, symbol, recent, fetch, today):
+    """
+    Merge the latest download into the history file. Downloads the full
+    history if there isn't one yet, or every HISTORY_REFRESH_DAYS. Never
+    raises: the history is a bonus and must not get in the way of alerts.
+    """
+    try:
+        points, full_download_day = load_history(path)
+        due = full_download_day is None or (today - full_download_day).days >= HISTORY_REFRESH_DAYS
+        if not points or due:
+            try:
+                points = fetch(symbol, HISTORY_FULL_DAYS)
+                full_download_day = today
+                log(f"Downloaded the full {symbol} history: {len(points)} days from {points[0].day}")
+            except Exception as error:
+                log(f"WARNING: could not download the full {symbol} history: {error}")
+                if full_download_day is None:
+                    full_download_day = today - timedelta(days=HISTORY_REFRESH_DAYS)   # try again next check
+
+        merged = merge_points(points, recent)
+        if merged != points or due:
+            save_history(path, merged, full_download_day)
+    except Exception as error:
+        log(f"WARNING: could not update the history file {path}: {error}")
+
+
+# ---------------------------------------------------------------------------
+# History report (served over HTTP)
+# ---------------------------------------------------------------------------
+
+def colour_runs(history):
+    """Group (DataPoint, colour) pairs into runs: [colour, first point, last point, trading days]."""
+    runs = []
+    for point, colour in history:
+        if runs and runs[-1][0] == colour:
+            runs[-1][2] = point
+            runs[-1][3] += 1
+        else:
+            runs.append([colour, point, point, 1])
+    return runs
+
+
+def build_report(symbol, points, window_days=DEFAULT_WINDOW_DAYS, summary=False):
+    """
+    Everything a client needs to answer questions about the series, as a dict
+    ready for JSON. `window_days` is calendar days back from the newest day,
+    or None for all of it. Runs (streaks) are measured over the whole history,
+    so a run that started before the window still shows its full length.
+    """
+    if len(points) < 2:
+        return None
+
+    history = colour_history(points)
+    latest = points[-1]
+    window_start = points[1].day if window_days is None else latest.day - timedelta(days=window_days)
+    streak_days, streak_complete = colour_streak(points)
+
+    days = []
+    for i in range(1, len(points)):
+        if points[i].day >= window_start:
+            days.append({
+                "date": points[i].day.isoformat(),
+                "value": round(points[i].value, 2),
+                "change": round(points[i].value - points[i - 1].value, 2),
+                "colour": history[i - 1][1],
+            })
+
+    runs = []
+    all_runs = colour_runs(history)
+    for index, (colour, first, last, trading_days) in enumerate(all_runs):
+        if last.day < window_start:
+            continue
+        runs.append({
+            "colour": colour,
+            "start": first.day.isoformat(),
+            "end": last.day.isoformat(),
+            "trading_days": trading_days,
+            "starts_before_window": first.day < window_start,
+            "starts_at_data_start": index == 0,
+            "ongoing": index == len(all_runs) - 1,
+        })
+
+    report = {
+        "symbol": symbol,
+        "data_starts": points[0].day.isoformat(),
+        "latest": {
+            "date": latest.day.isoformat(),
+            "value": round(latest.value, 2),
+            "change": round(daily_change(points), 2),
+            "colour": history[-1][1],
+            "streak_trading_days": streak_days,
+            "streak_complete": streak_complete,
+        },
+        "window": {
+            "from": window_start.isoformat(),
+            "to": latest.day.isoformat(),
+            "calendar_days": window_days,
+            "trading_days": len(days),
+        },
+        "runs": runs,
+        "colour_rule": "Black if the value rose from the previous trading day, Red if it fell; "
+                       "a flat day keeps the previous colour",
+    }
+    if not summary:
+        report["days"] = days
+    return report
+
+
+def make_handler(history_path, symbol):
+    class HistoryHandler(BaseHTTPRequestHandler):
+        def send_json(self, status, body):
+            data = json.dumps(body).encode()
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+
+        def do_GET(self):
+            url = urlparse(self.path)
+            if url.path == "/health":
+                self.send_json(200, {"ok": True})
+                return
+            if url.path != "/history":
+                self.send_json(404, {"error": "not found; try /history?days=365"})
+                return
+
+            query = parse_qs(url.query)
+            days_text = query.get("days", [str(DEFAULT_WINDOW_DAYS)])[0]
+            if days_text == "all":
+                window_days = None
+            elif days_text.isdigit() and int(days_text) > 0:
+                window_days = int(days_text)
+            else:
+                self.send_json(400, {"error": "days must be a positive number or 'all'"})
+                return
+            summary = query.get("summary", ["0"])[0] in ("1", "true", "yes")
+
+            points, _ = load_history(history_path)
+            report = build_report(symbol, points, window_days, summary)
+            if report is None:
+                self.send_json(503, {"error": "no history yet; the monitor fills it on its next check"})
+                return
+            self.send_json(200, report)
+
+        def log_message(self, format, *args):
+            log(f"HTTP {self.address_string()} {format % args}")
+
+    return HistoryHandler
+
+
+def start_http_server(port, history_path, symbol):
+    """Serve the history read-only in a background thread. Returns the server."""
+    server = ThreadingHTTPServer(("0.0.0.0", port), make_handler(history_path, symbol))
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    log(f"Serving {symbol} history on port {server.server_address[1]} (GET /history?days=365)")
+    return server
 
 
 # ---------------------------------------------------------------------------
@@ -500,13 +730,15 @@ def check_for_stale_data(state, last_data_day, mailer, symbol, today):
     return False
 
 
-def run_once(state_path, symbol, email_frequency, mailer, fetch=fetch_indicator, today=None, signal=None):
+def run_once(state_path, symbol, email_frequency, mailer, fetch=fetch_indicator, today=None, signal=None,
+             history_path=None):
     """
     Do one check: fetch data, and if there's a new trading day, update the
     state and send whatever email and Signal message are due. The state only
     moves forward once the email has been sent, so a failed email is retried
     on the next check. Signal is sent after the email, so a retried email
     doesn't post to Signal twice; a failed Signal post is not retried.
+    If `history_path` is given, every download is merged into the history file.
     """
     today = today or date.today()
     symbol = normalise_symbol(symbol)
@@ -520,6 +752,9 @@ def run_once(state_path, symbol, email_frequency, mailer, fetch=fetch_indicator,
         if check_for_stale_data(state, saved_day, mailer, symbol, today):
             save_state(state_path, state)
         return
+
+    if history_path is not None:
+        update_history(history_path, symbol, data, fetch, today)
 
     colour = latest_colour(data)
     if colour is None:
@@ -659,6 +894,9 @@ def parse_args():
     parser.add_argument("--signal-frequency", default=os.getenv("SIGNAL_FREQUENCY", "colour_change"),
                         choices=EMAIL_FREQUENCIES,
                         help="colour_change or daily, as for email (default: colour_change, or SIGNAL_FREQUENCY env var)")
+    parser.add_argument("--http-port", type=int, default=int(os.getenv("HTTP_PORT", "0")),
+                        help="Serve the history read-only on this port (GET /history); 0 = off "
+                             "(default: 0, or HTTP_PORT env var)")
     parser.add_argument("--check", action="store_true", help="Run one check and exit")
     parser.add_argument("--history", action="store_true", help="Show recent colours and exit")
     parser.add_argument("--test-email", action="store_true", help="Send a test email and exit")
@@ -674,6 +912,7 @@ def main():
     symbol = normalise_symbol(args.symbol)
     email_frequency = "daily" if args.email_frequency == "new_data" else args.email_frequency
     state_path = Path(args.data_dir) / f"{symbol}_state.json"
+    history_path = Path(args.data_dir) / f"{symbol}_history.csv"
 
     if args.history:
         show_history(symbol)
@@ -726,18 +965,21 @@ def main():
         log(f"Signal on: posting to {signal.destination} on {signal.frequency}")
 
     if args.check:
-        run_once(state_path, symbol, email_frequency, mailer, signal=signal)
+        run_once(state_path, symbol, email_frequency, mailer, signal=signal, history_path=history_path)
         return 0
 
     fast_interval = timedelta(seconds=args.interval)
     fast_window = timedelta(hours=args.window_hours)
     slow_interval = timedelta(seconds=args.slow_interval)
+    if args.http_port:
+        start_http_server(args.http_port, history_path, symbol)
+
     log(f"Watching {symbol}: every {args.interval}s for {args.window_hours}h after each US close, "
         f"then every {args.slow_interval}s if data is late. Emailing on: {email_frequency}. State: {state_path}")
     try:
         while True:
             try:
-                run_once(state_path, symbol, email_frequency, mailer, signal=signal)
+                run_once(state_path, symbol, email_frequency, mailer, signal=signal, history_path=history_path)
             except Exception as error:
                 log(f"ERROR: unexpected problem during check: {error}")
 

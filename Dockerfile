@@ -21,6 +21,10 @@ ENV SLOW_CHECK_INTERVAL=3600
 ENV SYMBOL=NYSI
 ENV EMAIL_FREQUENCY=colour_change
 ENV SIGNAL_FREQUENCY=colour_change
+ENV HTTP_PORT=0
+
+# GET /history when HTTP_PORT is set (e.g. 8095)
+EXPOSE 8095
 
 # Run the script in continuous monitoring mode when the container starts
 ENTRYPOINT ["python", "-u", "crap_stock_monitor.py"]
