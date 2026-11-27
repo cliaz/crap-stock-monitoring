@@ -139,7 +139,7 @@ def test_missing_state_file_gives_empty_state(tmp_path):
 
 def test_state_round_trip(tmp_path):
     path = tmp_path / "NYSI_state.json"
-    original = State(last_date="2026-11-19", last_colour="Red", last_value=-463.11, stale_alert_sent=True)
+    original = State(last_date="2026-11-19", last_label="Red", last_value=-463.11, stale_alert_sent=True)
     csm.save_state(path, original)
     assert csm.load_state(path) == original
 
@@ -156,7 +156,7 @@ def test_old_v25_state_file_is_still_understood(tmp_path):
         "last_value": 9.0,
     }
     path.write_text(json.dumps(old_format))
-    assert csm.load_state(path) == State(last_date="2025-12-19", last_colour="Red", last_value=9.0)
+    assert csm.load_state(path) == State(last_date="2025-12-19", last_label="Red", last_value=9.0)
 
 
 def test_corrupt_state_file_gives_empty_state(tmp_path):
@@ -176,15 +176,12 @@ SATURDAY = date(2026, 11, 21)
 TUESDAY = date(2026, 11, 24)
 
 
-def run(tmp_path, data, mailer, frequency="colour_change", today=SATURDAY, error=None):
-    return csm.run_once(
-        state_path=tmp_path / "NYSI_state.json",
-        symbol="NYSI",
-        email_frequency=frequency,
-        mailer=mailer,
-        fetch=FakeFetcher(data, error),
-        today=today,
-    )
+def nysi_colour(frequency="change"):
+    return csm.Watch("NYSI", csm.ColourRule(), csm.parse_frequency(frequency))
+
+
+def run(tmp_path, data, mailer, frequency="change", today=SATURDAY, error=None):
+    return csm.run_once([nysi_colour(frequency)], tmp_path, mailer, fetch=FakeFetcher(data, error), today=today)
 
 
 def test_first_run_saves_state_without_emailing(tmp_path):
@@ -193,7 +190,7 @@ def test_first_run_saves_state_without_emailing(tmp_path):
     assert mailer.sent == []
     state = csm.load_state(tmp_path / "NYSI_state.json")
     assert state.last_date == "2026-11-20"
-    assert state.last_colour == "Black"
+    assert state.last_label == "Black"
 
 
 def test_flip_sends_exactly_one_email(tmp_path):
@@ -205,7 +202,7 @@ def test_flip_sends_exactly_one_email(tmp_path):
     assert mailer.sent[0] == "NYSI Alert: Black → Red, 1.00 (-2.00)"
 
 
-def test_no_flip_sends_nothing_in_colour_change_mode(tmp_path):
+def test_no_flip_sends_nothing_in_change_mode(tmp_path):
     mailer = FakeMailer()
     run(tmp_path, FRIDAY_DATA, mailer)
     run(tmp_path, STAYS_BLACK, mailer, today=TUESDAY)
@@ -219,7 +216,7 @@ def test_daily_mode_emails_once_per_new_trading_day(tmp_path):
     run(tmp_path, STAYS_BLACK, mailer, frequency="daily", today=TUESDAY)
     run(tmp_path, STAYS_BLACK, mailer, frequency="daily", today=TUESDAY)
     assert len(mailer.sent) == 1
-    assert mailer.sent[0] == "NYSI Daily Update: Black 4.00 (+1.00)"
+    assert mailer.sent[0] == "NYSI Daily Update: Black, 4.00 (+1.00)"
 
 
 def test_daily_mode_says_when_it_flipped(tmp_path):
@@ -233,18 +230,18 @@ def test_failed_email_is_retried_on_the_next_check(tmp_path):
     run(tmp_path, FRIDAY_DATA, FakeMailer())
     broken = FakeMailer(fail=True)
     run(tmp_path, FLIP_TO_RED, broken, today=TUESDAY)
-    assert csm.load_state(tmp_path / "NYSI_state.json").last_colour == "Black"   # not advanced
+    assert csm.load_state(tmp_path / "NYSI_state.json").last_label == "Black"   # not advanced
 
     working = FakeMailer()
     run(tmp_path, FLIP_TO_RED, working, today=TUESDAY)
     assert len(working.sent) == 1
-    assert csm.load_state(tmp_path / "NYSI_state.json").last_colour == "Red"
+    assert csm.load_state(tmp_path / "NYSI_state.json").last_label == "Red"
 
 
 def test_without_email_config_state_still_advances(tmp_path):
     run(tmp_path, FRIDAY_DATA, None)
     run(tmp_path, FLIP_TO_RED, None, today=TUESDAY)
-    assert csm.load_state(tmp_path / "NYSI_state.json").last_colour == "Red"
+    assert csm.load_state(tmp_path / "NYSI_state.json").last_label == "Red"
 
 
 def test_fetch_failure_does_not_crash_or_touch_state(tmp_path):
@@ -255,7 +252,7 @@ def test_fetch_failure_does_not_crash_or_touch_state(tmp_path):
 
 def test_check_fetches_data_only_once(tmp_path):
     fetcher = FakeFetcher(FRIDAY_DATA)
-    csm.run_once(tmp_path / "s.json", "NYSI", "colour_change", None, fetch=fetcher, today=SATURDAY)
+    csm.run_once([nysi_colour()], tmp_path, None, fetch=fetcher, today=SATURDAY)
     assert fetcher.calls == 1
 
 
@@ -489,12 +486,12 @@ def test_previous_streak_is_the_run_before_a_flip():
 
 
 def build(kind, data, old_colour, new_colour):
-    return csm.build_email(kind, "NYSI", data=data, old_colour=old_colour, new_colour=new_colour)
+    return csm.build_email(kind, nysi_colour(), data=data, old_label=old_colour, new_label=new_colour)
 
 
 def test_daily_email_shows_value_change_and_streak():
     subject, html = build("daily", WEEK, "Red", "Red")
-    assert subject == "NYSI Daily Update: Red 90.25 (-11.25)"
+    assert subject == "NYSI Daily Update: Red, 90.25 (-11.25)"
     assert "90.25" in html
     assert "-11.25 since 2026-11-16" in html
     assert "Red for 4 days in a row" in html
@@ -502,16 +499,16 @@ def test_daily_email_shows_value_change_and_streak():
 
 def test_flip_email_says_how_long_the_previous_run_was():
     data = WEEK[:3]
-    subject, html = build("colour_change", data, "Black", "Red")
+    subject, html = build("change", data, "Black", "Red")
     assert subject == "NYSI Alert: Black → Red, 105.00 (-5.00)"
-    assert "Black &rarr; Red" in html
+    assert "Black → Red, after" in html
     assert "after 1+ day Black" in html
 
 
 def test_flat_day_email_says_the_colour_stays():
     subject, html = build("daily", WEEK[:5], "Red", "Red")
-    assert subject == "NYSI Daily Update: Red 101.50 (0.00)"
-    assert "0.00 since 2026-11-13 (flat, colour stays Red)" in html
+    assert subject == "NYSI Daily Update: Red, 101.50 (0.00)"
+    assert "0.00 since 2026-11-13 (flat, stays Red)" in html
 
 
 def test_open_ended_streak_is_shown_with_a_plus():
@@ -527,9 +524,8 @@ def test_open_ended_streak_is_shown_with_a_plus():
 class FakeSignal:
     """Records Signal messages instead of posting them. Can be told to fail."""
 
-    def __init__(self, frequency="colour_change", fail=False):
-        self.destination = "task-mgmt"
-        self.frequency = frequency
+    def __init__(self, fail=False):
+        self.destination = "smtmc"
         self.fail = fail
         self.sent = []
 
@@ -539,26 +535,19 @@ class FakeSignal:
         self.sent.append(text)
 
 
-def run_with_signal(tmp_path, data, mailer, signal, frequency="colour_change", today=SATURDAY):
-    return csm.run_once(
-        state_path=tmp_path / "NYSI_state.json",
-        symbol="NYSI",
-        email_frequency=frequency,
-        mailer=mailer,
-        fetch=FakeFetcher(data),
-        today=today,
-        signal=signal,
-    )
+def run_with_signal(tmp_path, data, mailer, signal, frequency="change", today=SATURDAY):
+    return csm.run_once([nysi_colour(frequency)], tmp_path, mailer, fetch=FakeFetcher(data), today=today,
+                        signal=signal)
 
 
 def test_signal_message_on_a_flip():
-    text = csm.build_signal_message("NYSI", FLIP_TO_RED, "Black", "Red")
-    assert text == "🔴 NYSI flipped Black → Red: 1.00 (-2.00) on 2026-11-23. Black lasted 1+ day."
+    text = csm.build_signal_message(nysi_colour(), FLIP_TO_RED, "Black", "Red")
+    assert text == "🔴 NYSI Black → Red: 1.00 (-2.00) on 2026-11-23. Black lasted 1+ day."
 
 
 def test_signal_message_without_a_flip():
-    text = csm.build_signal_message("NYSI", STAYS_BLACK, "Black", "Black")
-    assert text == "⚫ NYSI Black 4.00 (+1.00) on 2026-11-23, Black for 2+ days in a row."
+    text = csm.build_signal_message(nysi_colour(), STAYS_BLACK, "Black", "Black")
+    assert text == "⚫ NYSI 4.00 (+1.00) on 2026-11-23, Black for 2+ days in a row."
 
 
 def test_flip_posts_one_signal_message(tmp_path):
@@ -567,23 +556,21 @@ def test_flip_posts_one_signal_message(tmp_path):
     run_with_signal(tmp_path, FLIP_TO_RED, FakeMailer(), signal, today=TUESDAY)
     run_with_signal(tmp_path, FLIP_TO_RED, FakeMailer(), signal, today=TUESDAY)
     assert len(signal.sent) == 1
-    assert signal.sent[0].startswith("🔴 NYSI flipped Black → Red")
+    assert signal.sent[0].startswith("🔴 NYSI Black → Red")
 
 
-def test_signal_frequency_is_separate_from_email(tmp_path):
-    # Daily emails, but Signal only on a flip: a day without a flip posts nothing.
-    mailer, signal = FakeMailer(), FakeSignal("colour_change")
+def test_change_watch_posts_nothing_on_a_day_without_a_flip(tmp_path):
+    mailer, signal = FakeMailer(), FakeSignal()
+    run_with_signal(tmp_path, FRIDAY_DATA, mailer, signal)
+    run_with_signal(tmp_path, STAYS_BLACK, mailer, signal, today=TUESDAY)
+    assert mailer.sent == [] and signal.sent == []
+
+
+def test_daily_watch_emails_and_posts_every_new_trading_day(tmp_path):
+    mailer, signal = FakeMailer(), FakeSignal()
     run_with_signal(tmp_path, FRIDAY_DATA, mailer, signal, frequency="daily")
     run_with_signal(tmp_path, STAYS_BLACK, mailer, signal, frequency="daily", today=TUESDAY)
-    assert len(mailer.sent) == 1
-    assert signal.sent == []
-
-
-def test_daily_signal_posts_every_new_trading_day(tmp_path):
-    signal = FakeSignal("daily")
-    run_with_signal(tmp_path, FRIDAY_DATA, None, signal)
-    run_with_signal(tmp_path, STAYS_BLACK, None, signal, today=TUESDAY)
-    assert len(signal.sent) == 1
+    assert len(mailer.sent) == 1 and len(signal.sent) == 1
 
 
 def test_signal_failure_does_not_hold_up_the_state(tmp_path):
@@ -591,7 +578,7 @@ def test_signal_failure_does_not_hold_up_the_state(tmp_path):
     run_with_signal(tmp_path, FRIDAY_DATA, mailer, FakeSignal(fail=True))
     run_with_signal(tmp_path, FLIP_TO_RED, mailer, FakeSignal(fail=True), today=TUESDAY)
     assert len(mailer.sent) == 1
-    assert csm.load_state(tmp_path / "NYSI_state.json").last_colour == "Red"
+    assert csm.load_state(tmp_path / "NYSI_state.json").last_label == "Red"
 
 
 def test_signal_waits_for_the_email_so_a_retry_does_not_post_twice(tmp_path):
@@ -605,7 +592,7 @@ def test_signal_waits_for_the_email_so_a_retry_does_not_post_twice(tmp_path):
 
 def test_signature_matches_the_relay():
     # Same inputs as the Node relay's HMAC; the expected value was produced by Node.
-    relay = csm.SignalRelay("http://relay", "crap-stock-monitor", "s3cret", "task-mgmt", "colour_change")
+    relay = csm.SignalRelay("http://relay", "crap-stock-monitor", "s3cret", "task-mgmt")
     headers = relay.signed_headers(b'{"to":"task-mgmt","message":"hi"}', timestamp="1700000000", nonce="abc123")
     assert headers["X-Relay-Signature"] == "8004a4326fcfa9d984be537beb946a4174dbf5791ab4f97756f901e02aab3357"
     assert headers["X-Relay-Client"] == "crap-stock-monitor"
@@ -623,19 +610,19 @@ def test_signal_send_uses_a_timeout_and_raises_on_rejection(monkeypatch):
         return FakeResponse()
 
     monkeypatch.setattr(csm.requests, "post", fake_post)
-    relay = csm.SignalRelay("http://relay/", "crap-stock-monitor", "s3cret", "smtmc", "colour_change")
+    relay = csm.SignalRelay("http://relay/", "crap-stock-monitor", "s3cret", "smtmc")
     with pytest.raises(RuntimeError, match="403"):
         relay.send("hello")
     assert calls == [("http://relay/send", {"to": "smtmc", "message": "hello"}, 10)]
 
 
 def test_signal_is_off_without_details_or_destination(tmp_path):
-    assert csm.load_signal("task-mgmt", "colour_change", tmp_path / "missing.py") is None
+    assert csm.load_signal("task-mgmt", tmp_path / "missing.py") is None
     details = tmp_path / "signal_details.py"
     details.write_text('relay_url = "http://relay"\nclient_name = "c"\nsecret = "s"\n')
-    assert csm.load_signal(None, "colour_change", details) is None
-    relay = csm.load_signal("smtmc", "daily", details)
-    assert (relay.destination, relay.frequency, relay.client) == ("smtmc", "daily", "c")
+    assert csm.load_signal(None, details) is None
+    relay = csm.load_signal("smtmc", details)
+    assert (relay.destination, relay.client) == ("smtmc", "c")
 
 
 # ---------------------------------------------------------------------------
@@ -734,8 +721,7 @@ def test_unchanged_history_is_not_rewritten(tmp_path, monkeypatch):
 
 def test_run_once_fills_the_history_file(tmp_path):
     fetcher = DaysFetcher(recent=FRIDAY_DATA, full=LONG_HISTORY)
-    csm.run_once(tmp_path / "NYSI_state.json", "NYSI", "colour_change", None, fetch=fetcher,
-                 today=SATURDAY, history_path=tmp_path / "NYSI_history.csv")
+    csm.run_once([nysi_colour()], tmp_path, None, fetch=fetcher, today=SATURDAY, keep_history=True)
     assert len(csm.load_history(tmp_path / "NYSI_history.csv")[0]) == len(LONG_HISTORY) + len(FRIDAY_DATA)
 
 
@@ -777,7 +763,7 @@ def test_http_server_serves_history_and_errors(tmp_path):
     import urllib.request
 
     path = tmp_path / "NYSI_history.csv"
-    server = csm.start_http_server(0, path, "NYSI")
+    server = csm.start_http_server(0, tmp_path, ["NYSI"])
     base = f"http://127.0.0.1:{server.server_address[1]}"
     try:
         with pytest.raises(urllib.error.HTTPError) as no_data:
@@ -791,6 +777,194 @@ def test_http_server_serves_history_and_errors(tmp_path):
         with pytest.raises(urllib.error.HTTPError) as bad_days:
             urllib.request.urlopen(f"{base}/history?days=-3")
         assert bad_days.value.code == 400
-        assert json.loads(urllib.request.urlopen(f"{base}/health").read()) == {"ok": True}
+        assert json.loads(urllib.request.urlopen(f"{base}/health").read()) == {"ok": True, "symbols": ["NYSI"]}
+    finally:
+        server.shutdown()
+
+
+# ---------------------------------------------------------------------------
+# Watches and the levels rule
+# ---------------------------------------------------------------------------
+
+NYMO_LEVELS = csm.LevelsRule([-50, 50])
+
+
+def nymo_levels(frequency="change"):
+    return csm.Watch("NYMO", NYMO_LEVELS, frequency)
+
+
+def test_parse_watches_reads_one_per_line_with_comments():
+    watches = csm.parse_watches("""
+        NYSI  colour            change
+        # a comment
+        $nymo levels 50 -50     daily   # levels in any order
+    """)
+    assert [w.describe() for w in watches] == ["NYSI colour change", "NYMO levels -50 50 daily"]
+
+
+def test_parse_watches_accepts_semicolons_and_defaults_to_change():
+    watches = csm.parse_watches("NYSI colour; NYMO levels -50 50")
+    assert [w.frequency for w in watches] == ["change", "change"]
+
+
+def test_parse_watches_understands_the_old_frequency_names():
+    assert csm.parse_watches("NYSI colour colour_change")[0].frequency == "change"
+    assert csm.parse_watches("NYSI colour new_data")[0].frequency == "daily"
+
+
+@pytest.mark.parametrize("bad", [
+    "NYSI",                          # no rule
+    "NYSI sparkles",                 # unknown rule
+    "NYSI colour 5",                 # colour takes no numbers
+    "NYMO levels",                   # levels needs numbers
+    "NYMO levels -50 fifty",         # not a number
+    "NYMO levels -50 50 hourly",     # unknown frequency
+    "NYSI colour; NYSI colour daily",  # same symbol and rule twice
+    "  # only a comment",
+])
+def test_parse_watches_rejects_nonsense(bad):
+    with pytest.raises(ValueError):
+        csm.parse_watches(bad)
+
+
+def test_without_watches_it_is_one_colour_watch_like_before():
+    class Args:
+        watches = None
+        symbol = "$nysi"
+        email_frequency = "colour_change"
+    [watch] = csm.load_watches(Args())
+    assert watch.describe() == "NYSI colour change"
+
+
+def test_levels_labels_each_side():
+    data = points(("2026-11-17", 0.0), ("2026-11-18", -62.0), ("2026-11-19", 10.0), ("2026-11-20", 51.0))
+    assert [label for _, label in nymo_levels().labels(data)] == [
+        "below -50", "between -50 and 50", "above 50"]
+
+
+def test_a_value_exactly_on_a_level_counts_as_below_it():
+    data = points(("2026-11-19", 0.0), ("2026-11-20", 50.0))
+    assert nymo_levels().latest_label(data) == "between -50 and 50"
+
+
+def test_one_level_gives_two_sides():
+    rule = csm.LevelsRule([0])
+    assert rule.labels == ["below 0", "above 0"]
+    assert rule.describe() == "levels 0"
+
+
+def test_levels_transition_names_the_level_crossed():
+    assert NYMO_LEVELS.transition("between -50 and 50", "below -50") == "crossed below -50"
+    assert NYMO_LEVELS.transition("below -50", "between -50 and 50") == "crossed above -50"
+    assert NYMO_LEVELS.transition("between -50 and 50", "above 50") == "crossed above 50"
+    assert NYMO_LEVELS.transition("above 50", "between -50 and 50") == "crossed below 50"
+    assert NYMO_LEVELS.transition("below -50", "above 50") == "crossed above 50"   # both in one day
+
+
+def run_nymo(tmp_path, data, mailer, signal=None, today=SATURDAY):
+    return csm.run_once([nymo_levels()], tmp_path, mailer, fetch=FakeFetcher(data), today=today, signal=signal)
+
+
+def test_nymo_alerts_on_each_cross_out_and_back(tmp_path):
+    values = [10, -20, -55, -70, -60, -40, -30, 20, 55, 60, 45]
+    days = [
+        "2026-11-02", "2026-11-03", "2026-11-04", "2026-11-05", "2026-11-06", "2026-11-09",
+        "2026-11-10", "2026-11-11", "2026-11-12", "2026-11-13", "2026-11-16",
+    ]
+    series = points(*zip(days, values))
+    mailer, signal = FakeMailer(), FakeSignal()
+    for end in range(2, len(series) + 1):
+        visible = series[:end]
+        run_nymo(tmp_path, visible, mailer, signal, today=visible[-1].day)
+        run_nymo(tmp_path, visible, mailer, signal, today=visible[-1].day)   # polled twice
+    assert mailer.sent == [
+        "NYMO Alert: crossed below -50, -55.00 (-35.00)",
+        "NYMO Alert: crossed above -50, -40.00 (+20.00)",
+        "NYMO Alert: crossed above 50, 55.00 (+35.00)",
+        "NYMO Alert: crossed below 50, 45.00 (-15.00)",
+    ]
+    assert signal.sent[0] == "📉 NYMO crossed below -50: -55.00 (-35.00) on 2026-11-04. Between -50 and 50 lasted 1+ day."
+    assert signal.sent[1] == "📈 NYMO crossed above -50: -40.00 (+20.00) on 2026-11-09. Below -50 lasted 3 days."
+
+
+def test_nymo_daily_message_says_which_side_and_for_how_long():
+    data = points(("2026-11-17", -50.0), ("2026-11-18", -60.0), ("2026-11-19", -10.0), ("2026-11-20", -5.0))
+    text = csm.build_signal_message(nymo_levels("daily"), data, "between -50 and 50", "between -50 and 50")
+    assert text == "📊 NYMO -5.00 (+5.00) on 2026-11-20, between -50 and 50 for 2 days in a row."
+    subject, html = csm.build_email("daily", nymo_levels("daily"), data, "between -50 and 50", "between -50 and 50")
+    assert subject == "NYMO Daily Update: between -50 and 50, -5.00 (+5.00)"
+    assert "<strong>Level:</strong> between -50 and 50 for 2 days in a row" in html
+
+
+def test_levels_state_has_its_own_file_and_remembers_the_rule(tmp_path):
+    run_nymo(tmp_path, FRIDAY_DATA, FakeMailer())
+    state = csm.load_state(tmp_path / "NYMO_levels_state.json")
+    assert (state.last_label, state.rule) == ("between -50 and 50", "levels -50 50")
+
+
+def test_changing_the_levels_starts_afresh_without_an_alert(tmp_path):
+    mailer = FakeMailer()
+    run_nymo(tmp_path, points(("2026-11-19", 0.0), ("2026-11-20", -60.0)), mailer)   # below -50
+    wider = csm.Watch("NYMO", csm.LevelsRule([-70, 70]))
+    data = points(("2026-11-20", -60.0), ("2026-11-23", -65.0))
+    csm.run_once([wider], tmp_path, mailer, fetch=FakeFetcher(data), today=TUESDAY)
+    assert mailer.sent == []
+    assert csm.load_state(tmp_path / "NYMO_levels_state.json").rule == "levels -70 70"
+
+
+def test_pre_v3_colour_state_carries_over(tmp_path):
+    (tmp_path / "NYSI_state.json").write_text(json.dumps(
+        {"last_date": "2026-11-20", "last_colour": "Black", "last_value": 3.0, "stale_alert_sent": False}))
+    mailer = FakeMailer()
+    run(tmp_path, FLIP_TO_RED, mailer, today=TUESDAY)
+    assert mailer.sent == ["NYSI Alert: Black → Red, 1.00 (-2.00)"]
+
+
+def test_watches_on_the_same_symbol_share_one_download(tmp_path):
+    fetcher = FakeFetcher(FRIDAY_DATA)
+    zero_line = csm.Watch("NYSI", csm.LevelsRule([0]))
+    csm.run_once([nysi_colour(), zero_line], tmp_path, None, fetch=fetcher, today=SATURDAY)
+    assert fetcher.calls == 1
+    assert (tmp_path / "NYSI_state.json").exists() and (tmp_path / "NYSI_levels_state.json").exists()
+
+
+def test_each_symbol_is_downloaded_and_a_failure_does_not_stop_the_others(tmp_path):
+    asked = []
+
+    def fetch(symbol, days):
+        asked.append(symbol)
+        if symbol == "NYSI":
+            raise OSError("network down")
+        return FRIDAY_DATA
+
+    csm.run_once([nysi_colour(), nymo_levels()], tmp_path, None, fetch=fetch, today=SATURDAY)
+    assert asked == ["NYSI", "NYMO"]
+    assert not (tmp_path / "NYSI_state.json").exists()
+    assert csm.load_state(tmp_path / "NYMO_levels_state.json").last_date == "2026-11-20"
+
+
+def test_schedule_waits_for_the_symbol_that_is_furthest_behind(tmp_path):
+    watches = [nysi_colour(), nymo_levels()]
+    assert csm.oldest_data_day(watches, tmp_path) is None
+    csm.save_state(tmp_path / "NYSI_state.json", State(last_date="2026-11-23", last_label="Red"))
+    csm.save_state(tmp_path / "NYMO_levels_state.json", State(last_date="2026-11-20", last_label="below -50"))
+    assert csm.oldest_data_day(watches, tmp_path) == date(2026, 11, 20)
+
+
+def test_http_history_is_per_symbol(tmp_path):
+    import urllib.error
+    import urllib.request
+
+    csm.save_history(tmp_path / "NYSI_history.csv", LONG_HISTORY, SATURDAY)
+    csm.save_history(tmp_path / "NYMO_history.csv", FRIDAY_DATA, SATURDAY)
+    server = csm.start_http_server(0, tmp_path, ["NYMO", "NYSI"])
+    base = f"http://127.0.0.1:{server.server_address[1]}"
+    try:
+        assert json.loads(urllib.request.urlopen(f"{base}/history").read())["symbol"] == "NYSI"
+        nymo = json.loads(urllib.request.urlopen(f"{base}/history?symbol=$nymo&summary=1").read())
+        assert (nymo["symbol"], nymo["latest"]["value"]) == ("NYMO", 3.0)
+        with pytest.raises(urllib.error.HTTPError) as unknown:
+            urllib.request.urlopen(f"{base}/history?symbol=SPX")
+        assert unknown.value.code == 404
     finally:
         server.shutdown()

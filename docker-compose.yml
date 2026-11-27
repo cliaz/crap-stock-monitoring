@@ -4,7 +4,7 @@ services:
     container_name: crap-stock-monitor
     restart: unless-stopped
     ports:
-      - "8095:8095"              # read-only history: GET /history?days=365
+      - "8095:8095"              # read-only history: GET /history?symbol=NYMO&days=365
     volumes:
       - /dockers/crap-stock-monitoring/email_details.py:/app/email_details.py
       - /dockers/crap-stock-monitoring/signal_details.py:/app/signal_details.py   # optional, for Signal
@@ -15,17 +15,17 @@ services:
       CHECK_INTERVAL: 120        # seconds between checks for 4h after each US close (06:00-08:00 Melbourne)
       FAST_WINDOW_HOURS: 4       # how long to keep checking quickly after the close
       SLOW_CHECK_INTERVAL: 3600  # if data is late (US holiday etc.), check this often until it arrives
-      SYMBOL: NYSI
-      EMAIL_FREQUENCY: daily     # colour_change = only on a Red/Black flip, daily = every new trading day
-      SIGNAL_DESTINATION: task-mgmt    # relay destination name; leave out to turn Signal off
-      SIGNAL_FREQUENCY: colour_change  # same choices as EMAIL_FREQUENCY
+      WATCHES: |                 # symbol, rule, then change (only when it changes) or daily
+        NYSI  colour          change
+        NYMO  levels -50 50   change
+      SIGNAL_DESTINATION: smtmc  # relay destination name, for every watch; leave out to turn Signal off
       HTTP_PORT: 8095            # serve the history read-only; 0 = off
       # the above are the equivalent to running the script with:
-      # command: ["--symbol", "NYSI", "--interval", "120", "--window-hours", "4", "--slow-interval", "3600",
-      #           "--email-frequency", "daily", "--data-dir", "/app/data"]
+      # command: ["--watches", "NYSI colour change; NYMO levels -50 50 change", "--interval", "120",
+      #           "--window-hours", "4", "--slow-interval", "3600", "--data-dir", "/app/data"]
     # For one-time actions, override the command:
     # command: ["--test-email"]           # Send a test email
     # command: ["--check"]                # Check once and exit
     # command: ["--validate-email"]       # Validate email credentials
     # command: ["--test-signal"]          # Send a test Signal message
-    # command: ["--history"]              # Show recent Red/Black colours
+    # command: ["--history"]              # Show recent days for each watch
