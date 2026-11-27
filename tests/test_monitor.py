@@ -767,15 +767,15 @@ def test_http_server_serves_history_and_errors(tmp_path):
     base = f"http://127.0.0.1:{server.server_address[1]}"
     try:
         with pytest.raises(urllib.error.HTTPError) as no_data:
-            urllib.request.urlopen(f"{base}/history")
+            urllib.request.urlopen(f"{base}/history?symbol=NYSI")
         assert no_data.value.code == 503
 
         csm.save_history(path, LONG_HISTORY, SATURDAY)
-        body = json.loads(urllib.request.urlopen(f"{base}/history?days=all&summary=1").read())
+        body = json.loads(urllib.request.urlopen(f"{base}/history?symbol=NYSI&days=all&summary=1").read())
         assert body["latest"]["colour"] == "Black" and "days" not in body
 
         with pytest.raises(urllib.error.HTTPError) as bad_days:
-            urllib.request.urlopen(f"{base}/history?days=-3")
+            urllib.request.urlopen(f"{base}/history?symbol=NYSI&days=-3")
         assert bad_days.value.code == 400
         assert json.loads(urllib.request.urlopen(f"{base}/health").read()) == {"ok": True, "symbols": ["NYSI"]}
     finally:
@@ -960,7 +960,11 @@ def test_http_history_is_per_symbol(tmp_path):
     server = csm.start_http_server(0, tmp_path, ["NYMO", "NYSI"])
     base = f"http://127.0.0.1:{server.server_address[1]}"
     try:
-        assert json.loads(urllib.request.urlopen(f"{base}/history").read())["symbol"] == "NYSI"
+        with pytest.raises(urllib.error.HTTPError) as no_symbol:
+            urllib.request.urlopen(f"{base}/history")
+        assert no_symbol.value.code == 400
+        assert "NYMO, NYSI" in json.loads(no_symbol.value.read())["error"]
+        assert json.loads(urllib.request.urlopen(f"{base}/history?symbol=NYSI").read())["symbol"] == "NYSI"
         nymo = json.loads(urllib.request.urlopen(f"{base}/history?symbol=$nymo&summary=1").read())
         assert (nymo["symbol"], nymo["latest"]["value"]) == ("NYMO", 3.0)
         with pytest.raises(urllib.error.HTTPError) as unknown:

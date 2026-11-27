@@ -97,14 +97,15 @@ With `HTTP_PORT` set (e.g. `8095`), the monitor serves the history of every watc
 
 ```
 GET /health                       {"ok": true, "symbols": ["NYSI", "NYMO"]}
-GET /history                      NYSI (or the first watched symbol), the last 365 calendar days
-GET /history?symbol=NYMO          another watched symbol; works with all the options below
-GET /history?days=90              the last 90 calendar days
-GET /history?days=all             everything since 1998
-GET /history?days=all&summary=1   leave out the per-day list
+GET /history?symbol=NYSI                      the last 365 calendar days
+GET /history?symbol=NYMO&days=90              the last 90 calendar days
+GET /history?symbol=NYSI&days=all             everything since 1998
+GET /history?symbol=NYSI&days=all&summary=1   leave out the per-day list
 ```
 
-The response has `latest` (date, value, change, colour, streak; colour here is always the daily Black/Red direction, whatever the watch's rule), `window`, `days` (date, value, change and colour for each trading day in the window) and `runs`: each Red or Black streak that touches the window, with its start, end and full length in trading days. A run that began before the window keeps its full length and has `starts_before_window: true`; the current one has `ongoing: true`. So "the longest Red streak in the last year" is the largest Red `trading_days` in `/history?days=365&summary=1`. `data_starts` says where the stored data begins.
+`symbol` is required and must be one of the watched symbols: without it the answer is 400, and an unwatched symbol is 404. Both errors list the watched symbols.
+
+The response has `latest` (date, value, change, colour, streak; colour here is always the daily Black/Red direction, whatever the watch's rule), `window`, `days` (date, value, change and colour for each trading day in the window) and `runs`: each Red or Black streak that touches the window, with its start, end and full length in trading days. A run that began before the window keeps its full length and has `starts_before_window: true`; the current one has `ongoing: true`. So "the longest Red streak in the last year" is the largest Red `trading_days` in `/history?symbol=NYSI&days=365&summary=1`. `data_starts` says where the stored data begins.
 
 There's no authentication: the data is public market data. Only publish the port on a network you trust.
 

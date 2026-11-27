@@ -604,11 +604,6 @@ def history_path_for(data_dir, symbol):
     return Path(data_dir) / f"{symbol}_history.csv"
 
 
-def default_symbol(symbols):
-    """GET /history without ?symbol= means NYSI if it's watched, otherwise the first symbol."""
-    return "NYSI" if "NYSI" in symbols else symbols[0]
-
-
 def make_handler(data_dir, symbols):
     class HistoryHandler(BaseHTTPRequestHandler):
         def send_json(self, status, body):
@@ -625,11 +620,14 @@ def make_handler(data_dir, symbols):
                 self.send_json(200, {"ok": True, "symbols": symbols})
                 return
             if url.path != "/history":
-                self.send_json(404, {"error": "not found; try /history?symbol=NYSI&days=365"})
+                self.send_json(404, {"error": f"not found; try /history?symbol={symbols[0]}&days=365"})
                 return
 
             query = parse_qs(url.query)
-            symbol = normalise_symbol(query.get("symbol", [default_symbol(symbols)])[0])
+            if not query.get("symbol"):
+                self.send_json(400, {"error": f"symbol is required, one of {', '.join(symbols)}"})
+                return
+            symbol = normalise_symbol(query["symbol"][0])
             if symbol not in symbols:
                 self.send_json(404, {"error": f"{symbol} isn't watched; try one of {', '.join(symbols)}"})
                 return
@@ -661,7 +659,7 @@ def start_http_server(port, data_dir, symbols):
     server = ThreadingHTTPServer(("0.0.0.0", port), make_handler(data_dir, symbols))
     threading.Thread(target=server.serve_forever, daemon=True).start()
     log(f"Serving {', '.join(symbols)} history on port {server.server_address[1]} "
-        f"(GET /history?symbol={default_symbol(symbols)}&days=365)")
+        f"(GET /history?symbol={symbols[0]}&days=365)")
     return server
 
 
